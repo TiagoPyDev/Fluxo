@@ -688,4 +688,51 @@ if uploaded_file is not None:
                     
                     for descricao in df_pivot.index[:10]:  # Limitar a 10 itens
                         valores = df_pivot.loc[descricao]
-                        fig_categoria.add_trace(go
+                        fig_categoria.add_trace(go.Scatter(
+                            name=descricao[:30] + "..." if len(descricao) > 30 else descricao,
+                            x=[str(m) for m in df_pivot.columns],
+                            y=valores,
+                            mode='lines+markers'
+                        ))
+                    
+                    fig_categoria.update_layout(
+                        title=f'Evolução - {categoria_selecionada}',
+                        xaxis_title='Mês',
+                        yaxis_title='Valor (R$)',
+                        hovermode='x unified',
+                        height=400
+                    )
+                    
+                    st.plotly_chart(fig_categoria, use_container_width=True)
+                
+            else:
+                st.info(f"Nenhum dado encontrado para a categoria {categoria_selecionada} no período selecionado")
+    else:
+        st.warning("Nenhum resultado para exibir")
+    
+    # Rodapé
+    st.markdown("---")
+    st.caption(f"Última atualização: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+
+elif st.session_state.get('usar_exemplo', False):
+    st.info("👈 Por favor, faça o upload do arquivo 'Fluxo.xlsx' para visualizar os dados de exemplo")
+    st.session_state['usar_exemplo'] = False
+
+else:
+    # Mensagem inicial
+    st.info("👈 Faça o upload do arquivo de base no menu lateral para começar")
+    
+    # Exemplo da estrutura esperada
+    with st.expander("📋 Estrutura esperada do arquivo"):
+        st.markdown("""
+        O arquivo Excel deve conter uma planilha chamada **Base** com as seguintes colunas:
+        
+        - **Empresa**: Nome da empresa
+        - **Segmento**: Código do segmento (mapeado para categorias)
+        - **Descrição**: Descrição da transação
+        - **Vl.rateado**: Valor rateado da transação
+        - **Valor**: Valor original
+        - **Dt.emissao**: Data de emissão
+        - **Mês**: Mês de referência
+        
+        ### Exemplo de linhas:
