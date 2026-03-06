@@ -5,6 +5,7 @@ from datetime import datetime
 import plotly.graph_objects as go
 import plotly.express as px
 from io import BytesIO
+import traceback
 
 # Configuração da página
 st.set_page_config(
@@ -155,79 +156,121 @@ def processar_dados(df_base, empresas_selecionadas, data_inicio, data_fim):
     """
     Processa os dados da base conforme filtros e estrutura do painel
     """
-    # Converter colunas de data
-    df_base['Mês'] = pd.to_datetime(df_base['Mês'])
-    df_base['Dt.emissao'] = pd.to_datetime(df_base['Dt.emissao'])
-    
-    # Aplicar filtros
-    df_filtrado = df_base[
-        (df_base['Empresa'].isin(empresas_selecionadas)) &
-        (df_base['Mês'] >= data_inicio) &
-        (df_base['Mês'] <= data_fim)
-    ].copy()
-    
-    # Extrair mês/ano para agrupamento
-    df_filtrado['Ano_Mes'] = df_filtrado['Mês'].dt.to_period('M')
-    
-    # Lista de meses no período
-    meses_periodo = pd.period_range(data_inicio, data_fim, freq='M')
-    
-    # Inicializar dicionário para resultados
-    resultados = {categoria: {mes: 0 for mes in meses_periodo} 
-                  for categoria in PAINEL_ESTRUTURA.keys()}
-    
-    # Processar cada linha
-    for _, row in df_filtrado.iterrows():
-        categoria = CATEGORIAS_DRE.get(str(row['Segmento']), None)
-        if categoria and categoria in resultados:
-            mes = row['Ano_Mes']
-            if mes in resultados[categoria]:
-                resultados[categoria][mes] += row['Vl.rateado']
-    
-    # Calcular saldo inicial (Janeiro 2025)
-    saldo_inicial_janeiro = 6355160.795000029  # Valor do painel
-    
-    # Calcular saldos acumulados
-    saldos_finais = {}
-    saldo_acumulado = saldo_inicial_janeiro
-    
-    for mes in sorted(meses_periodo):
-        # Receitas (positivas)
-        receitas = resultados['RECEITAS TOTAL'][mes]
+    try:
+        # Verificar se as colunas necessárias existem
+        colunas_necessarias = ['Empresa', 'Segmento', 'Vl.rateado', 'Mês']
+        for col in colunas_necessarias:
+            if col not in df_base.columns:
+                st.error(f"Coluna '{col}' não encontrada no arquivo. Colunas disponíveis: {list(df_base.columns)}")
+                return None, None
         
-        # Despesas (negativas - considerando que já estão negativas na base)
-        despesas_totais = (
-            resultados['IMPOSTOS SOBRE VENDAS'][mes] +
-            resultados['DESEMBOLSOS FIXOS E VARIÁVEIS'][mes] +
-            resultados['OUTRAS ENTRADAS/SAÍDAS QUE NÃO AFETAM O DRE'][mes] +
-            resultados['ENTRADAS/SAÍDAS FINANCEIRAS'][mes] +
-            resultados['Transferência entre empresas'][mes]
+        # Converter colunas de data
+        df_base['Mês'] = pd.to_datetime(df_base['Mês'], errors='coerce')
+        
+        # Remover linhas com datas inválidas
+        df_base = df_base.dropna(subset=['Mês'])
+        
+        if df_base.empty:
+            st.error("Nenhuma data válida encontrada na coluna 'Mês'")
+            return None, None
+        
+        # Aplicar filtros
+        df_filtrado = df_base[
+            (df_base['Empresa'].isin(empresas_selecionadas)) &
+            (df_base['Mês'] >= pd.Timestamp(data_inicio)) &
+            (df_base['Mês'] <= pd.Timestamp(data_fim))
+        ].copy()
+        
+        if df_filtrado.empty:
+            st.warning("Nenhum dado encontrado para os filtros selecionados")
+            return None, None
+        
+        # Extrair mês/ano para agrupamento
+        df_filtrado['Ano_Mes'] = df_filtrado['Mês'].dt.to_period('M')
+        
+        # Lista de meses no período
+        meses_periodo = pd.period_range(
+            start=pd.Timestamp(data_inicio).to_period('M'),
+            end=pd.Timestamp(data_fim).to_period('M'),
+            freq='M'
         )
         
-        # Calcular saldo do mês
-        saldo_mes = receitas + despesas_totais  # despesas já são negativas
-        saldo_acumulado += saldo_mes
-        saldos_finais[mes] = saldo_acumulado
-    
-    resultados['SALDO INICIAL'] = {meses_periodo[0]: saldo_inicial_janeiro}
-    resultados['SALDO FINAL'] = saldos_finais
-    
-    return resultados, meses_periodo
+        # Inicializar dicionário para resultados
+        resultados = {categoria: {mes: 0.0 for mes in meses_periodo} 
+                      for categoria in PAINEL_ESTRUTURA.keys()}
+        
+        # Processar cada linha
+        for idx, row in df_filtrado.iterrows():
+            try:
+                segmento = str(row['Segmento']).strip()
+                categoria = CATEGORIAS_DRE.get(segmento, None)
+                
+                if categoria and categoria in resultados:
+                    mes = row['Ano_Mes']
+                    if mes in resultados[categoria]:
+                        # Garantir que o valor é numérico
+                        valor = pd.to_numeric(row['Vl.rateado'], errors='coerce')
+                        if pd.notna(valor):
+                            resultados[categoria][mes] += valor
+            except Exception as e:
+                st.warning(f"Erro ao processar linha {idx}: {str(e)[:100]}")
+                continue
+        
+        # Calcular saldo inicial (Janeiro 2025)
+        saldo_inicial_janeiro = 6355160.795000029  # Valor do painel
+        
+        # Calcular saldos acumulados
+        saldos_finais = {}
+        saldo_acumulado = saldo_inicial_janeiro
+        
+        for mes in sorted(meses_periodo):
+            # Receitas (positivas)
+            receitas = resultados['RECEITAS TOTAL'].get(mes, 0.0)
+            
+            # Despesas (negativas - considerando que já estão negativas na base)
+            despesas_totais = (
+                resultados['IMPOSTOS SOBRE VENDAS'].get(mes, 0.0) +
+                resultados['DESEMBOLSOS FIXOS E VARIÁVEIS'].get(mes, 0.0) +
+                resultados['OUTRAS ENTRADAS/SAÍDAS QUE NÃO AFETAM O DRE'].get(mes, 0.0) +
+                resultados['ENTRADAS/SAÍDAS FINANCEIRAS'].get(mes, 0.0) +
+                resultados['Transferência entre empresas'].get(mes, 0.0)
+            )
+            
+            # Calcular saldo do mês
+            saldo_mes = receitas + despesas_totais  # despesas já são negativas
+            saldo_acumulado += saldo_mes
+            saldos_finais[mes] = saldo_acumulado
+        
+        resultados['SALDO INICIAL'] = {meses_periodo[0]: saldo_inicial_janeiro}
+        resultados['SALDO FINAL'] = saldos_finais
+        
+        return resultados, meses_periodo
+        
+    except Exception as e:
+        st.error(f"Erro ao processar dados: {str(e)}")
+        st.error(traceback.format_exc())
+        return None, None
 
 def formatar_valor(valor):
     """Formata valor monetário"""
-    if pd.isna(valor) or valor == 0:
+    try:
+        if pd.isna(valor) or valor == 0:
+            return "R$ 0,00"
+        return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except:
         return "R$ 0,00"
-    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 def criar_dataframe_resultados(resultados, meses_periodo):
     """Cria DataFrame com os resultados para exibição"""
+    if resultados is None or meses_periodo is None:
+        return pd.DataFrame()
+    
     dados = []
     
     for categoria in PAINEL_ESTRUTURA.keys():
         linha = {'Categoria': categoria}
         for mes in meses_periodo:
-            valor = resultados.get(categoria, {}).get(mes, 0)
+            valor = resultados.get(categoria, {}).get(mes, 0.0)
             linha[str(mes)] = valor
         dados.append(linha)
     
@@ -236,12 +279,12 @@ def criar_dataframe_resultados(resultados, meses_periodo):
     # Adicionar linha de totais
     totais = {'Categoria': 'TOTAL'}
     for mes in meses_periodo:
-        soma = df_resultados[df_resultados['Categoria'].isin([
-            'RECEITAS TOTAL', 'IMPOSTOS SOBRE VENDAS', 
-            'DESEMBOLSOS FIXOS E VARIÁVEIS', 
-            'OUTRAS ENTRADAS/SAÍDAS QUE NÃO AFETAM O DRE',
-            'ENTRADAS/SAÍDAS FINANCEIRAS', 'Transferência entre empresas'
-        ])][str(mes)].sum()
+        soma = 0.0
+        for categoria in ['RECEITAS TOTAL', 'IMPOSTOS SOBRE VENDAS', 
+                          'DESEMBOLSOS FIXOS E VARIÁVEIS', 
+                          'OUTRAS ENTRADAS/SAÍDAS QUE NÃO AFETAM O DRE',
+                          'ENTRADAS/SAÍDAS FINANCEIRAS', 'Transferência entre empresas']:
+            soma += resultados.get(categoria, {}).get(mes, 0.0)
         totais[str(mes)] = soma
     
     df_resultados = pd.concat([df_resultados, pd.DataFrame([totais])], ignore_index=True)
@@ -250,19 +293,22 @@ def criar_dataframe_resultados(resultados, meses_periodo):
 
 def criar_grafico_fluxo(resultados, meses_periodo):
     """Cria gráfico de fluxo de caixa"""
+    if resultados is None or meses_periodo is None:
+        return go.Figure()
+    
     meses_str = [str(mes) for mes in meses_periodo]
     
-    receitas = [resultados['RECEITAS TOTAL'].get(mes, 0) for mes in meses_periodo]
+    receitas = [resultados['RECEITAS TOTAL'].get(mes, 0.0) for mes in meses_periodo]
     despesas = [
-        resultados['IMPOSTOS SOBRE VENDAS'].get(mes, 0) +
-        resultados['DESEMBOLSOS FIXOS E VARIÁVEIS'].get(mes, 0) +
-        resultados['OUTRAS ENTRADAS/SAÍDAS QUE NÃO AFETAM O DRE'].get(mes, 0) +
-        resultados['ENTRADAS/SAÍDAS FINANCEIRAS'].get(mes, 0) +
-        resultados['Transferência entre empresas'].get(mes, 0)
+        resultados['IMPOSTOS SOBRE VENDAS'].get(mes, 0.0) +
+        resultados['DESEMBOLSOS FIXOS E VARIÁVEIS'].get(mes, 0.0) +
+        resultados['OUTRAS ENTRADAS/SAÍDAS QUE NÃO AFETAM O DRE'].get(mes, 0.0) +
+        resultados['ENTRADAS/SAÍDAS FINANCEIRAS'].get(mes, 0.0) +
+        resultados['Transferência entre empresas'].get(mes, 0.0)
         for mes in meses_periodo
     ]
     
-    saldo_final = [resultados['SALDO FINAL'].get(mes, 0) for mes in meses_periodo]
+    saldo_final = [resultados['SALDO FINAL'].get(mes, 0.0) for mes in meses_periodo]
     
     fig = go.Figure()
     
@@ -321,9 +367,12 @@ def criar_grafico_fluxo(resultados, meses_periodo):
 
 def criar_grafico_saldo(resultados, meses_periodo):
     """Cria gráfico de evolução do saldo"""
+    if resultados is None or meses_periodo is None:
+        return go.Figure()
+    
     meses_str = [str(mes) for mes in meses_periodo]
-    saldo_inicial = [resultados['SALDO INICIAL'].get(mes, 0) for mes in meses_periodo]
-    saldo_final = [resultados['SALDO FINAL'].get(mes, 0) for mes in meses_periodo]
+    saldo_inicial = [resultados['SALDO INICIAL'].get(mes, 0.0) for mes in meses_periodo]
+    saldo_final = [resultados['SALDO FINAL'].get(mes, 0.0) for mes in meses_periodo]
     
     fig = go.Figure()
     
@@ -368,6 +417,9 @@ def criar_grafico_saldo(resultados, meses_periodo):
 
 def exportar_excel(df_resultados):
     """Exporta DataFrame para Excel"""
+    if df_resultados.empty:
+        return BytesIO().getvalue()
+    
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_resultados.to_excel(writer, sheet_name='Fluxo de Caixa', index=False)
@@ -378,6 +430,10 @@ def exportar_excel(df_resultados):
 # ============================================================================
 st.title("💰 Fluxo de Caixa Real")
 st.markdown("---")
+
+# Inicializar session state
+if 'usar_exemplo' not in st.session_state:
+    st.session_state['usar_exemplo'] = False
 
 # Sidebar - Filtros e Upload
 with st.sidebar:
@@ -394,10 +450,27 @@ with st.sidebar:
     
     if uploaded_file is not None:
         try:
+            # Tentar ler a planilha 'Base'
             df_base = pd.read_excel(uploaded_file, sheet_name='Base')
+            
+            st.success(f"✅ Arquivo carregado com sucesso!")
+            st.info(f"📊 Registros: {len(df_base):,}")
+            st.info(f"📋 Colunas: {', '.join(df_base.columns)}")
+            
+            # Verificar se as colunas necessárias existem
+            colunas_necessarias = ['Empresa', 'Segmento', 'Vl.rateado', 'Mês']
+            colunas_faltantes = [col for col in colunas_necessarias if col not in df_base.columns]
+            
+            if colunas_faltantes:
+                st.error(f"Colunas faltantes: {', '.join(colunas_faltantes)}")
+                st.stop()
             
             # Lista única de empresas
             empresas = sorted(df_base['Empresa'].dropna().unique())
+            
+            if not empresas:
+                st.error("Nenhuma empresa encontrada na coluna 'Empresa'")
+                st.stop()
             
             empresas_selecionadas = st.multiselect(
                 "Selecione as empresas",
@@ -405,10 +478,20 @@ with st.sidebar:
                 default=empresas
             )
             
+            if not empresas_selecionadas:
+                st.warning("Selecione pelo menos uma empresa")
+                st.stop()
+            
             # Filtro de data
-            datas_disponiveis = pd.to_datetime(df_base['Mês']).dt.date.unique()
-            data_min = pd.to_datetime(min(datas_disponiveis))
-            data_max = pd.to_datetime(max(datas_disponiveis))
+            df_base['Mês'] = pd.to_datetime(df_base['Mês'], errors='coerce')
+            df_base = df_base.dropna(subset=['Mês'])
+            
+            if df_base.empty:
+                st.error("Nenhuma data válida encontrada na coluna 'Mês'")
+                st.stop()
+            
+            data_min = df_base['Mês'].min().date()
+            data_max = df_base['Mês'].max().date()
             
             st.write("Período de análise")
             col1, col2 = st.columns(2)
@@ -431,46 +514,30 @@ with st.sidebar:
                 st.error("Data inicial não pode ser maior que data final")
                 st.stop()
             
-            st.markdown("---")
-            st.info(f"📊 Registros na base: {len(df_base):,}")
-            
         except Exception as e:
             st.error(f"Erro ao ler arquivo: {str(e)}")
+            st.error(traceback.format_exc())
             st.stop()
     else:
         st.warning("Por favor, faça o upload do arquivo de base")
         
-        # Dados exemplo para demonstração
         st.markdown("---")
-        st.info("ℹ️ Use o arquivo exemplo para demonstração")
+        st.info("ℹ️ Use o botão abaixo para demonstração")
         if st.button("Usar dados exemplo"):
             st.session_state['usar_exemplo'] = True
             st.rerun()
 
 # Área Principal
-if uploaded_file is not None or st.session_state.get('usar_exemplo', False):
-    
-    if st.session_state.get('usar_exemplo', False) and uploaded_file is None:
-        # Carregar dados exemplo do arquivo anexo
-        # Nota: Na prática, você teria um arquivo exemplo embutido
-        st.warning("Modo demonstração - usando dados do arquivo anexo")
-        
-        # Simular carregamento
-        df_base = pd.read_excel('Fluxo.xlsx', sheet_name='Base')
-        empresas = sorted(df_base['Empresa'].dropna().unique())
-        empresas_selecionadas = empresas
-        data_inicio = datetime(2025, 1, 1)
-        data_fim = datetime(2025, 3, 31)
-    else:
-        empresas_selecionadas = empresas_selecionadas
-        data_inicio = datetime.combine(data_inicio, datetime.min.time())
-        data_fim = datetime.combine(data_fim, datetime.min.time())
-    
+if uploaded_file is not None:
     # Processar dados
     with st.spinner("Processando dados..."):
         resultados, meses_periodo = processar_dados(
             df_base, empresas_selecionadas, data_inicio, data_fim
         )
+    
+    if resultados is None or meses_periodo is None:
+        st.error("Erro ao processar os dados. Verifique o formato do arquivo.")
+        st.stop()
     
     # Métricas principais
     st.header("📊 Resumo do Período")
@@ -481,30 +548,27 @@ if uploaded_file is not None or st.session_state.get('usar_exemplo', False):
         total_receitas = sum(resultados['RECEITAS TOTAL'].values())
         st.metric(
             "Total Receitas",
-            formatar_valor(total_receitas),
-            delta=None
+            formatar_valor(total_receitas)
         )
     
     with col2:
-        total_despesas = sum(
+        total_despesas = abs(sum(
             resultados['IMPOSTOS SOBRE VENDAS'].values()
-        ) + sum(resultados['DESEMBOLSOS FIXOS E VARIÁVEIS'].values())
+        ) + sum(resultados['DESEMBOLSOS FIXOS E VARIÁVEIS'].values()))
         st.metric(
             "Total Despesas",
-            formatar_valor(abs(total_despesas)),
-            delta=None
+            formatar_valor(total_despesas)
         )
     
     with col3:
-        saldo_inicial = resultados['SALDO INICIAL'].get(meses_periodo[0], 0)
+        saldo_inicial = resultados['SALDO INICIAL'].get(meses_periodo[0], 0.0)
         st.metric(
             "Saldo Inicial",
-            formatar_valor(saldo_inicial),
-            delta=None
+            formatar_valor(saldo_inicial)
         )
     
     with col4:
-        saldo_final = resultados['SALDO FINAL'].get(meses_periodo[-1], 0)
+        saldo_final = resultados['SALDO FINAL'].get(meses_periodo[-1], 0.0)
         variacao = saldo_final - saldo_inicial
         delta_color = "normal" if variacao >= 0 else "inverse"
         st.metric(
@@ -536,136 +600,92 @@ if uploaded_file is not None or st.session_state.get('usar_exemplo', False):
     
     df_resultados = criar_dataframe_resultados(resultados, meses_periodo)
     
-    # Formatação para exibição
-    df_exibicao = df_resultados.copy()
-    for col in df_exibicao.columns[1:]:
-        df_exibicao[col] = df_exibicao[col].apply(formatar_valor)
-    
-    st.dataframe(
-        df_exibicao,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Categoria": st.column_config.Column("Categoria", width=300)
-        }
-    )
-    
-    # Botões de exportação
-    col1, col2, col3 = st.columns([1, 1, 3])
-    
-    with col1:
-        csv = df_resultados.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Download CSV",
-            data=csv,
-            file_name=f"fluxo_caixa_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv"
+    if not df_resultados.empty:
+        # Formatação para exibição
+        df_exibicao = df_resultados.copy()
+        for col in df_exibicao.columns[1:]:
+            df_exibicao[col] = df_exibicao[col].apply(formatar_valor)
+        
+        st.dataframe(
+            df_exibicao,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Categoria": st.column_config.Column("Categoria", width=300)
+            }
         )
-    
-    with col2:
-        excel_data = exportar_excel(df_resultados)
-        st.download_button(
-            label="📥 Download Excel",
-            data=excel_data,
-            file_name=f"fluxo_caixa_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        
+        # Botões de exportação
+        col1, col2, col3 = st.columns([1, 1, 3])
+        
+        with col1:
+            csv = df_resultados.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Download CSV",
+                data=csv,
+                file_name=f"fluxo_caixa_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
+        
+        with col2:
+            excel_data = exportar_excel(df_resultados)
+            st.download_button(
+                label="📥 Download Excel",
+                data=excel_data,
+                file_name=f"fluxo_caixa_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        
+        # Análise detalhada por categoria
+        st.markdown("---")
+        st.header("🔍 Análise Detalhada por Categoria")
+        
+        categorias_disponiveis = [c for c in PAINEL_ESTRUTURA.keys() 
+                                  if c not in ['SALDO INICIAL', 'SALDO FINAL']]
+        
+        categoria_selecionada = st.selectbox(
+            "Selecione uma categoria para análise detalhada",
+            options=categorias_disponiveis
         )
-    
-    # Análise detalhada por categoria
-    st.markdown("---")
-    st.header("🔍 Análise Detalhada por Categoria")
-    
-    categoria_selecionada = st.selectbox(
-        "Selecione uma categoria para análise detalhada",
-        options=[c for c in PAINEL_ESTRUTURA.keys() if c not in ['SALDO INICIAL', 'SALDO FINAL']]
-    )
-    
-    if categoria_selecionada:
-        # Filtrar apenas itens da categoria selecionada
-        codigos_categoria = [k for k, v in CATEGORIAS_DRE.items() if v == categoria_selecionada]
         
-        df_detalhado = df_base[
-            (df_base['Empresa'].isin(empresas_selecionadas)) &
-            (df_base['Segmento'].astype(str).isin(codigos_categoria)) &
-            (pd.to_datetime(df_base['Mês']) >= data_inicio) &
-            (pd.to_datetime(df_base['Mês']) <= data_fim)
-        ].copy()
-        
-        if not df_detalhado.empty:
-            df_detalhado['Mês'] = pd.to_datetime(df_detalhado['Mês']).dt.to_period('M')
-            df_detalhado['Valor Formatado'] = df_detalhado['Vl.rateado'].apply(formatar_valor)
+        if categoria_selecionada:
+            # Filtrar apenas itens da categoria selecionada
+            codigos_categoria = [k for k, v in CATEGORIAS_DRE.items() if v == categoria_selecionada]
             
-            # Agrupar por mês e descrição
-            df_pivot = df_detalhado.pivot_table(
-                values='Vl.rateado',
-                index='Descrição',
-                columns='Mês',
-                aggfunc='sum',
-                fill_value=0
-            )
+            df_detalhado = df_base[
+                (df_base['Empresa'].isin(empresas_selecionadas)) &
+                (df_base['Segmento'].astype(str).isin(codigos_categoria)) &
+                (pd.to_datetime(df_base['Mês']) >= pd.Timestamp(data_inicio)) &
+                (pd.to_datetime(df_base['Mês']) <= pd.Timestamp(data_fim))
+            ].copy()
             
-            # Formatar valores
-            df_pivot_formatado = df_pivot.copy()
-            for col in df_pivot_formatado.columns:
-                df_pivot_formatado[col] = df_pivot_formatado[col].apply(formatar_valor)
-            
-            st.dataframe(
-                df_pivot_formatado,
-                use_container_width=True
-            )
-            
-            # Gráfico da categoria
-            fig_categoria = go.Figure()
-            
-            for descricao in df_pivot.index[:10]:  # Limitar a 10 itens
-                valores = df_pivot.loc[descricao]
-                fig_categoria.add_trace(go.Scatter(
-                    name=descricao[:30] + "..." if len(descricao) > 30 else descricao,
-                    x=[str(m) for m in df_pivot.columns],
-                    y=valores,
-                    mode='lines+markers'
-                ))
-            
-            fig_categoria.update_layout(
-                title=f'Evolução - {categoria_selecionada}',
-                xaxis_title='Mês',
-                yaxis_title='Valor (R$)',
-                hovermode='x unified',
-                height=400
-            )
-            
-            st.plotly_chart(fig_categoria, use_container_width=True)
-            
-        else:
-            st.info(f"Nenhum dado encontrado para a categoria {categoria_selecionada} no período selecionado")
-    
-    # Rodapé
-    st.markdown("---")
-    st.caption(f"Última atualização: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
-
-else:
-    # Mensagem inicial
-    st.info("👈 Faça o upload do arquivo de base no menu lateral para começar")
-    
-    # Exemplo da estrutura esperada
-    with st.expander("📋 Estrutura esperada do arquivo"):
-        st.markdown("""
-        O arquivo Excel deve conter uma planilha chamada **Base** com as seguintes colunas:
-        
-        - **Empresa**: Nome da empresa
-        - **Segmento**: Código do segmento (mapeado para categorias)
-        - **Descrição**: Descrição da transação
-        - **Vl.rateado**: Valor rateado da transação
-        - **Valor**: Valor original
-        - **Dt.emissao**: Data de emissão
-        - **Mês**: Mês de referência
-        
-        ### Mapeamento de Categorias
-        Os códigos de segmento são automaticamente mapeados para as categorias do painel:
-        - **31101001, 31101004** → RECEITAS TOTAL
-        - **61301010, 61301011, 61301012, 61301013, 61301014** → IMPOSTOS SOBRE VENDAS
-        - **41101001 até 41213004** → DESEMBOLSOS FIXOS E VARIÁVEIS
-        - **61301069** → Transferência entre empresas
-        - **61301022, 61301072, 61301077, 61301019, 61301020, 61301037** → ENTRADAS/SAÍDAS FINANCEIRAS
-        - Demais códigos 6130... → OUTRAS ENTRADAS/SAÍDAS QUE NÃO AFETAM O DRE
-        """)
+            if not df_detalhado.empty:
+                df_detalhado['Mês'] = pd.to_datetime(df_detalhado['Mês']).dt.to_period('M')
+                df_detalhado['Valor Formatado'] = df_detalhado['Vl.rateado'].apply(formatar_valor)
+                
+                # Agrupar por mês e descrição
+                df_pivot = df_detalhado.pivot_table(
+                    values='Vl.rateado',
+                    index='Descrição',
+                    columns='Mês',
+                    aggfunc='sum',
+                    fill_value=0
+                )
+                
+                # Formatar valores
+                df_pivot_formatado = df_pivot.copy()
+                for col in df_pivot_formatado.columns:
+                    df_pivot_formatado[col] = df_pivot_formatado[col].apply(formatar_valor)
+                
+                st.dataframe(
+                    df_pivot_formatado,
+                    use_container_width=True
+                )
+                
+                # Gráfico da categoria
+                if len(df_pivot) > 0:
+                    fig_categoria = go.Figure()
+                    
+                    for descricao in df_pivot.index[:10]:  # Limitar a 10 itens
+                        valores = df_pivot.loc[descricao]
+                        fig_categoria.add_trace(go
