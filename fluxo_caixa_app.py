@@ -5,16 +5,206 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta, date
 import io
+import numpy as np
+import holidays
 
-from config import CORES
-from data_processor import DataProcessor
+# ============================================
+# CONFIGURAÇÕES DIRETAMENTE NO CÓDIGO
+# ============================================
 
-# Configuração da página
+# Cores do tema (substitui o config.toml)
+CORES = {
+    'entradas': '#2E8B57',      # Verde
+    'saidas': '#DC143C',         # Vermelho
+    'saldo': '#1E3A8A',          # Azul escuro
+    'saldo_zero': '#9CA3AF',     # Cinza
+    'primaria': '#1E3A8A',       # Cor primária (botões, links)
+    'fundo': '#FFFFFF',           # Fundo branco
+    'fundo_secundario': '#F3F4F6', # Fundo secundário
+    'texto': '#1F2937'            # Cor do texto
+}
+
+# Configurações de feriados e dias úteis
+FERIADOS_BR = holidays.Brazil()
+DIAS_UTEIS = list(range(5))  # 0-4 = segunda a sexta
+DIAS_PARA_CREDITO = 2  # Dias após pagamento para dinheiro cair na conta
+
+# Configurações da página (substitui o tema do config.toml)
 st.set_page_config(
     page_title="Fluxo de Caixa Projetado",
     page_icon="💰",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
+
+# Aplicar tema customizado via CSS
+st.markdown(f"""
+<style>
+    /* Cores personalizadas */
+    .stApp {{
+        background-color: {CORES['fundo']};
+    }}
+    .stButton>button {{
+        background-color: {CORES['primaria']};
+        color: white;
+    }}
+    .stButton>button:hover {{
+        background-color: {CORES['primaria']}dd;
+    }}
+    .metric-card {{
+        background-color: {CORES['fundo_secundario']};
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border-left: 4px solid {CORES['primaria']};
+    }}
+    .st-emotion-cache-1y4p8pa {{
+        color: {CORES['texto']};
+    }}
+    footer {{
+        text-align: center;
+        color: gray;
+        padding: 10px;
+        font-size: 0.8rem;
+    }}
+</style>
+""", unsafe_allow_html=True)
+
+# ============================================
+# CLASSES DE PROCESSAMENTO
+# ============================================
+
+class DataProcessor:
+    def __init__(self):
+        self.df_historico = None
+        self.df_pagamentos = None
+        
+    def load_historico(self, file_path):
+        """Carrega e processa o arquivo histórico de faturas"""
+        # Carregar dados
+        df = pd.read_excel(file_path, sheet_name='Faturamento')
+        
+        # Processar datas
+        df['DTEMISSAO'] = pd.to_datetime(df['DTEMISSAO'], errors='coerce')
+        df['DTVENCIMENTO'] = pd.to_datetime(df['DTVENCIMENTO'], errors='coerce')
+        
+        # Extrair apenas a data (sem hora)
+        df['DATA_EMISSAO'] = df['DTEMISSAO'].dt.date
+        df['DATA_VENCIMENTO'] = df['DTVENCIMENTO'].dt.date
+        
+        # Calcular data de crédito (2 dias após pagamento)
+        df['DATA_CREDITO'] = df['DATA_VENCIMENTO'].apply(self._proximo_dia_util)
+        
+        # Extrair mês/ano para agrupamento
+        df['MES_ANO'] = pd.to_datetime(df['DATA_CREDITO']).dt.to_period('M')
+        
+        self.df_historico = df
+        return df
+    
+    def _proximo_dia_util(self, data):
+        """Retorna o próximo dia útil após a data (considerando feriados)"""
+        if pd.isna(data):
+            return data
+        
+        data_atual = pd.to_datetime(data)
+        dias_adicionados = 0
+        
+        while dias_adicionados < DIAS_PARA_CREDITO:
+            data_atual += timedelta(days=1)
+            if data_atual.weekday() < 5 and data_atual not in FERIADOS_BR:
+                dias_adicionados += 1
+        
+        return data_atual.date()
+    
+    def calcular_fluxo_projetado(self, df, meses_projecao=12):
+        """Calcula fluxo de caixa projetado"""
+        if df is None or df.empty:
+            return pd.DataFrame()
+        
+        # Última data no histórico
+        ultima_data = df['DATA_CREDITO'].max()
+        ultima_data = pd.to_datetime(ultima_data)
+        
+        # Gerar datas para projeção
+        datas_projecao = []
+        data_atual = ultima_data
+        
+        for _ in range(meses_projecao * 30):  # Projetar aproximadamente 30 dias por mês
+            data_atual += timedelta(days=1)
+            datas_projecao.append(data_atual.date())
+        
+        # Agrupar entradas por cliente para projetar padrões
+        entradas_por_cliente = df.groupby('CLIENTE').agg({
+            'VALORLIQUIDO': ['mean', 'std', 'count'],
+            'DATA_CREDITO': lambda x: list(x)
+        }).round(2)
+        
+        entradas_por_cliente.columns = ['media', 'desvio', 'frequencia', 'datas_historicas']
+        
+        return entradas_por_cliente
+    
+    def filtrar_dados(self, df, data_inicio=None, data_fim=None, clientes=None, empresa=None):
+        """Aplica filtros ao dataframe"""
+        if df is None or df.empty:
+            return df
+        
+        df_filtrado = df.copy()
+        
+        if data_inicio:
+            df_filtrado = df_filtrado[df_filtrado['DATA_CREDITO'] >= pd.to_datetime(data_inicio).date()]
+        
+        if data_fim:
+            df_filtrado = df_filtrado[df_filtrado['DATA_CREDITO'] <= pd.to_datetime(data_fim).date()]
+        
+        if clientes and len(clientes) > 0:
+            df_filtrado = df_filtrado[df_filtrado['CLIENTE'].isin(clientes)]
+        
+        if empresa:
+            df_filtrado = df_filtrado[df_filtrado['EMPRESA'] == empresa]
+        
+        return df_filtrado
+    
+    def calcular_saldo_diario(self, df_entradas, df_saidas=None):
+        """Calcula saldo diário baseado em entradas e saídas"""
+        if df_entradas is None or df_entradas.empty:
+            return pd.DataFrame()
+        
+        # Agrupar entradas por data
+        entradas_diarias = df_entradas.groupby('DATA_CREDITO')['VALORLIQUIDO'].sum().reset_index()
+        entradas_diarias.columns = ['data', 'entradas']
+        
+        # Se houver saídas, processar
+        if df_saidas is not None and not df_saidas.empty:
+            saidas_diarias = df_saidas.groupby('DATA_CREDITO')['VALORLIQUIDO'].sum().reset_index()
+            saidas_diarias.columns = ['data', 'saidas']
+            
+            # Combinar entradas e saídas
+            saldo = pd.merge(entradas_diarias, saidas_diarias, on='data', how='outer').fillna(0)
+        else:
+            saldo = entradas_diarias.copy()
+            saldo['saidas'] = 0
+        
+        # Calcular saldo líquido
+        saldo['saldo_liquido'] = saldo['entradas'] - saldo['saidas']
+        
+        # Calcular saldo acumulado
+        saldo = saldo.sort_values('data')
+        saldo['saldo_acumulado'] = saldo['saldo_liquido'].cumsum()
+        
+        return saldo
+
+# ============================================
+# FUNÇÕES AUXILIARES
+# ============================================
+
+def formatar_valor(valor):
+    """Formata valor para exibição em R$"""
+    if pd.isna(valor):
+        return "R$ 0,00"
+    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+# ============================================
+# APLICAÇÃO PRINCIPAL
+# ============================================
 
 # Inicializar processador de dados
 @st.cache_resource
@@ -134,30 +324,44 @@ tab1, tab2, tab3, tab4 = st.tabs([
 with tab1:
     st.header("Visão Geral do Fluxo de Caixa")
     
-    # Métricas principais
+    # Métricas principais em cards estilizados
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         total_entradas = df_filtrado['VALORLIQUIDO'].sum()
-        st.metric(
-            "Total Recebimentos",
-            f"R$ {total_entradas:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        )
+        st.markdown(f"""
+        <div class="metric-card">
+            <h4>Total Recebimentos</h4>
+            <h2>{formatar_valor(total_entradas)}</h2>
+        </div>
+        """, unsafe_allow_html=True)
     
     with col2:
         num_notas = len(df_filtrado)
-        st.metric("Número de Notas", f"{num_notas:,}".replace(",", "."))
+        st.markdown(f"""
+        <div class="metric-card">
+            <h4>Número de Notas</h4>
+            <h2>{num_notas:,}</h2>
+        </div>
+        """.replace(",", "."), unsafe_allow_html=True)
     
     with col3:
         num_clientes = df_filtrado['CLIENTE'].nunique()
-        st.metric("Clientes", num_clientes)
+        st.markdown(f"""
+        <div class="metric-card">
+            <h4>Clientes</h4>
+            <h2>{num_clientes}</h2>
+        </div>
+        """, unsafe_allow_html=True)
     
     with col4:
         ticket_medio = total_entradas / num_notas if num_notas > 0 else 0
-        st.metric(
-            "Ticket Médio",
-            f"R$ {ticket_medio:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        )
+        st.markdown(f"""
+        <div class="metric-card">
+            <h4>Ticket Médio</h4>
+            <h2>{formatar_valor(ticket_medio)}</h2>
+        </div>
+        """, unsafe_allow_html=True)
     
     # Gráfico de fluxo por mês
     st.subheader("Fluxo Mensal de Recebimentos")
@@ -249,18 +453,10 @@ with tab2:
         st.subheader("Detalhamento Diário")
         
         saldo_diario_display = saldo_diario.copy()
-        saldo_diario_display['entradas'] = saldo_diario_display['entradas'].apply(
-            lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        )
-        saldo_diario_display['saidas'] = saldo_diario_display['saidas'].apply(
-            lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        )
-        saldo_diario_display['saldo_liquido'] = saldo_diario_display['saldo_liquido'].apply(
-            lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        )
-        saldo_diario_display['saldo_acumulado'] = saldo_diario_display['saldo_acumulado'].apply(
-            lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        )
+        saldo_diario_display['entradas'] = saldo_diario_display['entradas'].apply(formatar_valor)
+        saldo_diario_display['saidas'] = saldo_diario_display['saidas'].apply(formatar_valor)
+        saldo_diario_display['saldo_liquido'] = saldo_diario_display['saldo_liquido'].apply(formatar_valor)
+        saldo_diario_display['saldo_acumulado'] = saldo_diario_display['saldo_acumulado'].apply(formatar_valor)
         
         st.dataframe(
             saldo_diario_display,
@@ -279,12 +475,8 @@ with tab3:
         
         projecoes_display = projecoes.reset_index()
         projecoes_display.columns = ['Cliente', 'Média (R$)', 'Desvio Padrão', 'Frequência', 'Datas Históricas']
-        projecoes_display['Média (R$)'] = projecoes_display['Média (R$)'].apply(
-            lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        )
-        projecoes_display['Desvio Padrão'] = projecoes_display['Desvio Padrão'].apply(
-            lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        )
+        projecoes_display['Média (R$)'] = projecoes_display['Média (R$)'].apply(formatar_valor)
+        projecoes_display['Desvio Padrão'] = projecoes_display['Desvio Padrão'].apply(formatar_valor)
         
         st.dataframe(projecoes_display, use_container_width=True)
         
@@ -326,12 +518,8 @@ with tab4:
     df_display = df_filtrado.copy()
     
     # Formatar valores
-    df_display['VALORBRUTO'] = df_display['VALORBRUTO'].apply(
-        lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    )
-    df_display['VALORLIQUIDO'] = df_display['VALORLIQUIDO'].apply(
-        lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    )
+    df_display['VALORBRUTO'] = df_display['VALORBRUTO'].apply(formatar_valor)
+    df_display['VALORLIQUIDO'] = df_display['VALORLIQUIDO'].apply(formatar_valor)
     
     # Selecionar colunas para exibição
     colunas_exibir = ['EMPRESA', 'COD', 'CLIENTE', 'DATA_EMISSAO', 'DATA_VENCIMENTO', 
@@ -344,7 +532,7 @@ with tab4:
     )
     
     # Botão para download
-    csv = df_filtrado.to_csv(index=False)
+    csv = df_filtrado.to_csv(index=False, encoding='utf-8-sig')
     st.download_button(
         label="📥 Download dos dados filtrados (CSV)",
         data=csv,
@@ -355,12 +543,12 @@ with tab4:
 # Footer
 st.markdown("---")
 st.markdown(
-    """
-    <div style='text-align: center; color: gray; padding: 10px;'>
+    f"""
+    <footer>
         Desenvolvido para análise de fluxo de caixa | 
         💰 Entradas em conta 2 dias úteis após vencimento |
         📅 Considera apenas dias úteis
-    </div>
+    </footer>
     """,
     unsafe_allow_html=True
 )
