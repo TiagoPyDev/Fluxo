@@ -616,4 +616,4 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-streamlit run fluxo_caixa_app.py
+
