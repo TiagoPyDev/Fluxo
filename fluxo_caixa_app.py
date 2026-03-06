@@ -1,4 +1,4 @@
-! pip install ploty
+!pip install ploty
 
 import streamlit as st
 import pandas as pd
