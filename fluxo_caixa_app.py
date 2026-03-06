@@ -12,7 +12,7 @@ import holidays
 # CONFIGURAÇÕES DIRETAMENTE NO CÓDIGO
 # ============================================
 
-# Cores do tema (substitui o config.toml)
+# Cores do tema
 CORES = {
     'entradas': '#2E8B57',      # Verde
     'saidas': '#DC143C',         # Vermelho
@@ -29,7 +29,7 @@ FERIADOS_BR = holidays.Brazil()
 DIAS_UTEIS = list(range(5))  # 0-4 = segunda a sexta
 DIAS_PARA_CREDITO = 2  # Dias após pagamento para dinheiro cair na conta
 
-# Configurações da página (substitui o tema do config.toml)
+# Configurações da página
 st.set_page_config(
     page_title="Fluxo de Caixa Projetado",
     page_icon="💰",
@@ -56,9 +56,17 @@ st.markdown(f"""
         padding: 1rem;
         border-radius: 0.5rem;
         border-left: 4px solid {CORES['primaria']};
+        margin-bottom: 1rem;
     }}
-    .st-emotion-cache-1y4p8pa {{
-        color: {CORES['texto']};
+    .metric-card h4 {{
+        margin: 0;
+        font-size: 0.9rem;
+        color: #666;
+    }}
+    .metric-card h2 {{
+        margin: 0;
+        font-size: 1.8rem;
+        font-weight: bold;
     }}
     footer {{
         text-align: center;
@@ -80,117 +88,143 @@ class DataProcessor:
         
     def load_historico(self, file_path):
         """Carrega e processa o arquivo histórico de faturas"""
-        # Carregar dados
-        df = pd.read_excel(file_path, sheet_name='Faturamento')
-        
-        # Processar datas
-        df['DTEMISSAO'] = pd.to_datetime(df['DTEMISSAO'], errors='coerce')
-        df['DTVENCIMENTO'] = pd.to_datetime(df['DTVENCIMENTO'], errors='coerce')
-        
-        # Extrair apenas a data (sem hora)
-        df['DATA_EMISSAO'] = df['DTEMISSAO'].dt.date
-        df['DATA_VENCIMENTO'] = df['DTVENCIMENTO'].dt.date
-        
-        # Calcular data de crédito (2 dias após pagamento)
-        df['DATA_CREDITO'] = df['DATA_VENCIMENTO'].apply(self._proximo_dia_util)
-        
-        # Extrair mês/ano para agrupamento
-        df['MES_ANO'] = pd.to_datetime(df['DATA_CREDITO']).dt.to_period('M')
-        
-        self.df_historico = df
-        return df
+        try:
+            # Carregar dados
+            df = pd.read_excel(file_path, sheet_name='Faturamento')
+            
+            # Verificar se o dataframe está vazio
+            if df.empty:
+                st.error("O arquivo carregado está vazio!")
+                return None
+            
+            # Processar datas
+            df['DTEMISSAO'] = pd.to_datetime(df['DTEMISSAO'], errors='coerce')
+            df['DTVENCIMENTO'] = pd.to_datetime(df['DTVENCIMENTO'], errors='coerce')
+            
+            # Remover linhas com datas inválidas
+            df = df.dropna(subset=['DTVENCIMENTO'])
+            
+            if df.empty:
+                st.error("Nenhuma data de vencimento válida encontrada!")
+                return None
+            
+            # Extrair apenas a data (sem hora)
+            df['DATA_EMISSAO'] = df['DTEMISSAO'].dt.date
+            df['DATA_VENCIMENTO'] = df['DTVENCIMENTO'].dt.date
+            
+            # Calcular data de crédito (2 dias após pagamento)
+            df['DATA_CREDITO'] = df['DATA_VENCIMENTO'].apply(self._proximo_dia_util)
+            
+            # Remover linhas com data de crédito inválida
+            df = df.dropna(subset=['DATA_CREDITO'])
+            
+            # Extrair mês/ano para agrupamento
+            df['MES_ANO'] = pd.to_datetime(df['DATA_CREDITO']).dt.to_period('M')
+            
+            # Garantir que valores são numéricos
+            df['VALORBRUTO'] = pd.to_numeric(df['VALORBRUTO'], errors='coerce').fillna(0)
+            df['VALORLIQUIDO'] = pd.to_numeric(df['VALORLIQUIDO'], errors='coerce').fillna(0)
+            
+            self.df_historico = df
+            return df
+            
+        except Exception as e:
+            st.error(f"Erro ao carregar arquivo: {str(e)}")
+            return None
     
     def _proximo_dia_util(self, data):
         """Retorna o próximo dia útil após a data (considerando feriados)"""
         if pd.isna(data):
-            return data
+            return None
         
-        data_atual = pd.to_datetime(data)
-        dias_adicionados = 0
-        
-        while dias_adicionados < DIAS_PARA_CREDITO:
-            data_atual += timedelta(days=1)
-            if data_atual.weekday() < 5 and data_atual not in FERIADOS_BR:
-                dias_adicionados += 1
-        
-        return data_atual.date()
+        try:
+            data_atual = pd.to_datetime(data)
+            dias_adicionados = 0
+            
+            while dias_adicionados < DIAS_PARA_CREDITO:
+                data_atual += timedelta(days=1)
+                if data_atual.weekday() < 5 and data_atual not in FERIADOS_BR:
+                    dias_adicionados += 1
+            
+            return data_atual.date()
+        except:
+            return None
     
     def calcular_fluxo_projetado(self, df, meses_projecao=12):
         """Calcula fluxo de caixa projetado"""
         if df is None or df.empty:
             return pd.DataFrame()
         
-        # Última data no histórico
-        ultima_data = df['DATA_CREDITO'].max()
-        ultima_data = pd.to_datetime(ultima_data)
-        
-        # Gerar datas para projeção
-        datas_projecao = []
-        data_atual = ultima_data
-        
-        for _ in range(meses_projecao * 30):  # Projetar aproximadamente 30 dias por mês
-            data_atual += timedelta(days=1)
-            datas_projecao.append(data_atual.date())
-        
-        # Agrupar entradas por cliente para projetar padrões
-        entradas_por_cliente = df.groupby('CLIENTE').agg({
-            'VALORLIQUIDO': ['mean', 'std', 'count'],
-            'DATA_CREDITO': lambda x: list(x)
-        }).round(2)
-        
-        entradas_por_cliente.columns = ['media', 'desvio', 'frequencia', 'datas_historicas']
-        
-        return entradas_por_cliente
+        try:
+            # Agrupar entradas por cliente para projetar padrões
+            entradas_por_cliente = df.groupby('CLIENTE').agg({
+                'VALORLIQUIDO': ['mean', 'std', 'count'],
+                'DATA_CREDITO': lambda x: list(x) if len(x) > 0 else []
+            }).round(2)
+            
+            entradas_por_cliente.columns = ['media', 'desvio', 'frequencia', 'datas_historicas']
+            
+            return entradas_por_cliente
+        except:
+            return pd.DataFrame()
     
     def filtrar_dados(self, df, data_inicio=None, data_fim=None, clientes=None, empresa=None):
         """Aplica filtros ao dataframe"""
         if df is None or df.empty:
             return df
         
-        df_filtrado = df.copy()
-        
-        if data_inicio:
-            df_filtrado = df_filtrado[df_filtrado['DATA_CREDITO'] >= pd.to_datetime(data_inicio).date()]
-        
-        if data_fim:
-            df_filtrado = df_filtrado[df_filtrado['DATA_CREDITO'] <= pd.to_datetime(data_fim).date()]
-        
-        if clientes and len(clientes) > 0:
-            df_filtrado = df_filtrado[df_filtrado['CLIENTE'].isin(clientes)]
-        
-        if empresa:
-            df_filtrado = df_filtrado[df_filtrado['EMPRESA'] == empresa]
-        
-        return df_filtrado
+        try:
+            df_filtrado = df.copy()
+            
+            if data_inicio:
+                data_inicio_dt = pd.to_datetime(data_inicio).date()
+                df_filtrado = df_filtrado[df_filtrado['DATA_CREDITO'] >= data_inicio_dt]
+            
+            if data_fim:
+                data_fim_dt = pd.to_datetime(data_fim).date()
+                df_filtrado = df_filtrado[df_filtrado['DATA_CREDITO'] <= data_fim_dt]
+            
+            if clientes and len(clientes) > 0:
+                df_filtrado = df_filtrado[df_filtrado['CLIENTE'].isin(clientes)]
+            
+            if empresa and empresa != 'Todas':
+                df_filtrado = df_filtrado[df_filtrado['EMPRESA'] == empresa]
+            
+            return df_filtrado
+        except:
+            return pd.DataFrame()
     
     def calcular_saldo_diario(self, df_entradas, df_saidas=None):
         """Calcula saldo diário baseado em entradas e saídas"""
         if df_entradas is None or df_entradas.empty:
             return pd.DataFrame()
         
-        # Agrupar entradas por data
-        entradas_diarias = df_entradas.groupby('DATA_CREDITO')['VALORLIQUIDO'].sum().reset_index()
-        entradas_diarias.columns = ['data', 'entradas']
-        
-        # Se houver saídas, processar
-        if df_saidas is not None and not df_saidas.empty:
-            saidas_diarias = df_saidas.groupby('DATA_CREDITO')['VALORLIQUIDO'].sum().reset_index()
-            saidas_diarias.columns = ['data', 'saidas']
+        try:
+            # Agrupar entradas por data
+            entradas_diarias = df_entradas.groupby('DATA_CREDITO')['VALORLIQUIDO'].sum().reset_index()
+            entradas_diarias.columns = ['data', 'entradas']
             
-            # Combinar entradas e saídas
-            saldo = pd.merge(entradas_diarias, saidas_diarias, on='data', how='outer').fillna(0)
-        else:
-            saldo = entradas_diarias.copy()
-            saldo['saidas'] = 0
-        
-        # Calcular saldo líquido
-        saldo['saldo_liquido'] = saldo['entradas'] - saldo['saidas']
-        
-        # Calcular saldo acumulado
-        saldo = saldo.sort_values('data')
-        saldo['saldo_acumulado'] = saldo['saldo_liquido'].cumsum()
-        
-        return saldo
+            # Se houver saídas, processar
+            if df_saidas is not None and not df_saidas.empty:
+                saidas_diarias = df_saidas.groupby('DATA_CREDITO')['VALORLIQUIDO'].sum().reset_index()
+                saidas_diarias.columns = ['data', 'saidas']
+                
+                # Combinar entradas e saídas
+                saldo = pd.merge(entradas_diarias, saidas_diarias, on='data', how='outer').fillna(0)
+            else:
+                saldo = entradas_diarias.copy()
+                saldo['saidas'] = 0
+            
+            # Calcular saldo líquido
+            saldo['saldo_liquido'] = saldo['entradas'] - saldo['saidas']
+            
+            # Calcular saldo acumulado
+            saldo = saldo.sort_values('data')
+            saldo['saldo_acumulado'] = saldo['saldo_liquido'].cumsum()
+            
+            return saldo
+        except:
+            return pd.DataFrame()
 
 # ============================================
 # FUNÇÕES AUXILIARES
@@ -198,9 +232,24 @@ class DataProcessor:
 
 def formatar_valor(valor):
     """Formata valor para exibição em R$"""
-    if pd.isna(valor):
+    try:
+        if pd.isna(valor) or valor is None:
+            return "R$ 0,00"
+        return f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except:
         return "R$ 0,00"
-    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+def safe_min_max(series):
+    """Retorna min e max com segurança para séries vazias"""
+    try:
+        if series is None or len(series) == 0:
+            return None, None
+        series_clean = series.dropna()
+        if len(series_clean) == 0:
+            return None, None
+        return series_clean.min(), series_clean.max()
+    except:
+        return None, None
 
 # ============================================
 # APLICAÇÃO PRINCIPAL
@@ -229,56 +278,56 @@ with st.sidebar:
     )
     
     if historico_file:
-        df = processor.load_historico(historico_file)
-        st.success(f"✅ Histórico carregado: {len(df)} registros")
-    
-    # Upload de pagamentos (opcional)
-    pagamentos_file = st.file_uploader(
-        "Carregar pagamentos recebidos (opcional)",
-        type=['xlsx', 'xls', 'csv'],
-        key='pagamentos'
-    )
-    
-    if pagamentos_file:
-        st.info("📥 Arquivo de pagamentos carregado")
+        with st.spinner("Carregando dados..."):
+            df = processor.load_historico(historico_file)
+        
+        if df is not None and not df.empty:
+            st.success(f"✅ Histórico carregado: {len(df)} registros")
+        else:
+            st.error("❌ Erro ao carregar arquivo. Verifique o formato.")
+            st.stop()
     
     st.markdown("---")
     
-    # Filtros
-    st.header("🔍 Filtros")
-    
-    if historico_file and df is not None:
+    # Filtros (só aparecem se os dados foram carregados)
+    if historico_file and df is not None and not df.empty:
+        st.header("🔍 Filtros")
+        
         # Filtro de período
         st.subheader("Período")
         
-        data_min = df['DATA_CREDITO'].min()
-        data_max = df['DATA_CREDITO'].max()
+        data_min, data_max = safe_min_max(df['DATA_CREDITO'])
         
-        col1, col2 = st.columns(2)
-        with col1:
-            data_inicio = st.date_input(
-                "Data inicial",
-                value=data_min,
-                min_value=data_min,
-                max_value=data_max
-            )
-        with col2:
-            data_fim = st.date_input(
-                "Data final",
-                value=data_max,
-                min_value=data_min,
-                max_value=data_max
-            )
+        if data_min is None or data_max is None:
+            st.warning("Não há datas válidas para filtrar")
+            data_inicio = date.today()
+            data_fim = date.today()
+        else:
+            col1, col2 = st.columns(2)
+            with col1:
+                data_inicio = st.date_input(
+                    "Data inicial",
+                    value=data_min,
+                    min_value=data_min,
+                    max_value=data_max
+                )
+            with col2:
+                data_fim = st.date_input(
+                    "Data final",
+                    value=data_max,
+                    min_value=data_min,
+                    max_value=data_max
+                )
         
         # Filtro de empresa
-        empresas = ['Todas'] + sorted(df['EMPRESA'].unique().tolist())
+        empresas = ['Todas'] + sorted(df['EMPRESA'].dropna().unique().tolist())
         empresa_selecionada = st.selectbox(
             "Empresa",
             options=empresas
         )
         
         # Filtro de clientes
-        clientes = sorted(df['CLIENTE'].unique().tolist())
+        clientes = sorted(df['CLIENTE'].dropna().unique().tolist())
         clientes_selecionados = st.multiselect(
             "Clientes (deixe vazio para todos)",
             options=clientes
@@ -294,20 +343,23 @@ with st.sidebar:
             max_value=24,
             value=6
         )
+    else:
+        st.stop()
 
 # Área principal
-if historico_file is None:
+if historico_file is None or df is None or df.empty:
     st.info("👈 Carregue o arquivo de faturamento histórico para começar")
     st.stop()
 
 # Aplicar filtros
-df_filtrado = processor.filtrar_dados(
-    df,
-    data_inicio=data_inicio if 'data_inicio' in locals() else None,
-    data_fim=data_fim if 'data_fim' in locals() else None,
-    clientes=clientes_selecionados if clientes_selecionados else None,
-    empresa=None if empresa_selecionada == 'Todas' else empresa_selecionada
-)
+with st.spinner("Aplicando filtros..."):
+    df_filtrado = processor.filtrar_dados(
+        df,
+        data_inicio=data_inicio if 'data_inicio' in locals() else None,
+        data_fim=data_fim if 'data_fim' in locals() else None,
+        clientes=clientes_selecionados if 'clientes_selecionados' in locals() and clientes_selecionados else None,
+        empresa=empresa_selecionada if 'empresa_selecionada' in locals() else None
+    )
 
 if df_filtrado.empty:
     st.warning("⚠️ Nenhum dado encontrado com os filtros selecionados")
@@ -324,7 +376,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
 with tab1:
     st.header("Visão Geral do Fluxo de Caixa")
     
-    # Métricas principais em cards estilizados
+    # Métricas principais
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
@@ -484,32 +536,36 @@ with tab3:
         st.subheader("Projeção Mensal")
         
         # Criar datas futuras baseadas nos padrões
-        ultimo_mes = pd.to_datetime(df_filtrado['DATA_CREDITO'].max()).to_period('M')
-        meses_futuros = [ultimo_mes + i for i in range(1, meses_projecao + 1)]
-        
-        # Estimar valores futuros baseados na média histórica
-        media_mensal_historica = df_filtrado.groupby('MES_ANO')['VALORLIQUIDO'].sum().mean()
-        
-        projecao_mensal = pd.DataFrame({
-            'Mês': [str(m) for m in meses_futuros],
-            'Valor Projetado (R$)': [media_mensal_historica] * meses_projecao
-        })
-        
-        fig_projecao = px.bar(
-            projecao_mensal,
-            x='Mês',
-            y='Valor Projetado (R$)',
-            title=f"Projeção para os próximos {meses_projecao} meses",
-            color_discrete_sequence=[CORES['entradas']]
-        )
-        
-        st.plotly_chart(fig_projecao, use_container_width=True)
-        
-        # Aviso sobre a projeção
-        st.info(
-            "ℹ️ As projeções são baseadas nas médias históricas e podem não refletir "
-            "valores reais futuros. Utilize como referência e ajuste conforme necessário."
-        )
+        try:
+            ultima_data = pd.to_datetime(df_filtrado['DATA_CREDITO'].max())
+            ultimo_mes = ultima_data.to_period('M')
+            meses_futuros = [ultimo_mes + i for i in range(1, meses_projecao + 1)]
+            
+            # Estimar valores futuros baseados na média histórica
+            media_mensal_historica = df_filtrado.groupby('MES_ANO')['VALORLIQUIDO'].sum().mean()
+            
+            projecao_mensal = pd.DataFrame({
+                'Mês': [str(m) for m in meses_futuros],
+                'Valor Projetado (R$)': [media_mensal_historica] * meses_projecao
+            })
+            
+            fig_projecao = px.bar(
+                projecao_mensal,
+                x='Mês',
+                y='Valor Projetado (R$)',
+                title=f"Projeção para os próximos {meses_projecao} meses",
+                color_discrete_sequence=[CORES['entradas']]
+            )
+            
+            st.plotly_chart(fig_projecao, use_container_width=True)
+            
+            # Aviso sobre a projeção
+            st.info(
+                "ℹ️ As projeções são baseadas nas médias históricas e podem não refletir "
+                "valores reais futuros. Utilize como referência e ajuste conforme necessário."
+            )
+        except Exception as e:
+            st.warning("Não foi possível gerar a projeção mensal.")
 
 with tab4:
     st.header("Dados Detalhados")
