@@ -1,11 +1,11 @@
 
-!pip install streamlit pandas numpy plotly openpyxl xlrd
+#!pip install streamlit pandas numpy plotly openpyxl xlrd
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-import plotly.express as px
+#import plotly.express as px
 import plotly.graph_objects as go
 from io import BytesIO
 import calendar
