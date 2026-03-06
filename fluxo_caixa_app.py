@@ -1,5 +1,5 @@
 
-#!pip install streamlit
+pip install streamlit pandas numpy plotly openpyxl xlrd
 
 import streamlit as st
 import pandas as pd
