@@ -33,10 +33,17 @@ st.markdown("""
     .positive {
         color: #10b981;
         font-weight: bold;
+        font-size: 1.5rem;
     }
     .negative {
         color: #ef4444;
         font-weight: bold;
+        font-size: 1.5rem;
+    }
+    .metric-label {
+        font-size: 1rem;
+        color: #4b5563;
+        margin-bottom: 0.5rem;
     }
     .stDataFrame {
         font-size: 0.8rem;
@@ -250,7 +257,6 @@ def criar_modelo_painel():
 # ============================================================================
 # FUNÇÕES DE PROCESSAMENTO
 # ============================================================================
-@st.cache_data
 def carregar_dados_base(uploaded_file):
     """Carrega e processa o arquivo de base Excel"""
     try:
@@ -288,10 +294,17 @@ def processar_base_para_painel(df_base, df_painel, datas, filtros=None):
     if df_base_filtered is None or df_base_filtered.empty:
         return df_painel_filled
     
+    # Converter todas as colunas do painel para numérico
+    for col in df_painel_filled.columns:
+        df_painel_filled[col] = pd.to_numeric(df_painel_filled[col], errors='coerce').fillna(0)
+    
     # Agrupar por descrição e mês
     # Criar coluna de mês a partir da data de pagamento
     if 'Dt.pagto' in df_base_filtered.columns:
         df_base_filtered['Mês'] = pd.to_datetime(df_base_filtered['Dt.pagto']).dt.to_period('M')
+        
+        # Garantir que Vl.rateado é numérico
+        df_base_filtered['Vl.rateado'] = pd.to_numeric(df_base_filtered['Vl.rateado'], errors='coerce').fillna(0)
         
         # Agrupar por descrição e mês, somando os valores
         grouped = df_base_filtered.groupby(['Descrição', 'Mês'])['Vl.rateado'].sum().reset_index()
@@ -315,8 +328,12 @@ def calcular_saldos(df_painel_filled):
     """
     Calcula os saldos inicial e final com base nos dados.
     """
-    # Identificar colunas de mês (assumindo que são todas as colunas exceto a primeira que é o índice)
+    # Identificar colunas de mês (assumindo que são todas as colunas)
     meses_cols = df_painel_filled.columns.tolist()
+    
+    # Garantir que todos os valores são numéricos
+    for col in meses_cols:
+        df_painel_filled[col] = pd.to_numeric(df_painel_filled[col], errors='coerce').fillna(0)
     
     # SALDO INICIAL - primeiro mês
     if 'SALDO INICIAL' in df_painel_filled.index and len(meses_cols) > 0:
@@ -354,9 +371,9 @@ def calcular_saldos(df_painel_filled):
             # Somar todas as saídas (valores negativos)
             saidas = 0
             for idx in df_painel_filled.index:
-                if idx not in ['SALDO INICIAL', 'RECEITAS TOTAL', 'SALDO FINAL', 'CAIXA EFETIVO', 'CAIXA EFETIVO ACUMULADO']:
+                if idx not in ['SALDO INICIAL', 'RECEITAS TOTAL', 'SALDO FINAL', 'CAIXA EFETIVO', 'CAIXA EFETIVO ACUMULADO', '']:
                     valor = df_painel_filled.loc[idx, mes_atual]
-                    if pd.notna(valor) and valor < 0:
+                    if valor < 0:  # Agora todos são numéricos
                         saidas += valor
             
             df_painel_filled.loc['SALDO FINAL', mes_atual] = saldo_inicial + receitas + saidas
@@ -383,8 +400,10 @@ def calcular_saldos(df_painel_filled):
 def exibir_painel(df_painel):
     """Exibe o painel completo formatado"""
     
-    # Formatar números
+    # Criar cópia para exibição
     df_display = df_painel.copy()
+    
+    # Formatar números
     for col in df_display.columns:
         df_display[col] = df_display[col].apply(lambda x: f"R$ {x:,.2f}" if pd.notna(x) else "R$ 0,00")
     
@@ -424,9 +443,9 @@ def exibir_graficos(df_painel):
         for mes in meses:
             total_despesas = 0
             for idx in df_painel.index:
-                if idx not in ['SALDO INICIAL', 'RECEITAS TOTAL', 'SALDO FINAL', 'CAIXA EFETIVO', 'CAIXA EFETIVO ACUMULADO']:
+                if idx not in ['SALDO INICIAL', 'RECEITAS TOTAL', 'SALDO FINAL', 'CAIXA EFETIVO', 'CAIXA EFETIVO ACUMULADO', '']:
                     valor = df_painel.loc[idx, mes]
-                    if pd.notna(valor) and valor < 0:
+                    if valor < 0:
                         total_despesas += valor
             despesas.append(abs(total_despesas))
         
@@ -450,45 +469,52 @@ def exibir_metricas_principais(df_painel):
     meses = df_painel.columns.tolist()
     ultimo_mes = meses[-2] if len(meses) > 1 else meses[0]  # Último mês do ano
     
+    # Garantir que os valores são numéricos
+    saldo_atual = float(df_painel.loc['SALDO FINAL', ultimo_mes]) if 'SALDO FINAL' in df_painel.index else 0
+    receita_total = float(df_painel.loc['RECEITAS TOTAL', ultimo_mes]) if 'RECEITAS TOTAL' in df_painel.index else 0
+    
+    # Calcular despesas totais
+    despesas_total = 0
+    for idx in df_painel.index:
+        if idx not in ['SALDO INICIAL', 'RECEITAS TOTAL', 'SALDO FINAL', 'CAIXA EFETIVO', 'CAIXA EFETIVO ACUMULADO', '']:
+            valor = float(df_painel.loc[idx, ultimo_mes])
+            if valor < 0:
+                despesas_total += valor
+    
+    caixa_efetivo = float(df_painel.loc['CAIXA EFETIVO', ultimo_mes]) if 'CAIXA EFETIVO' in df_painel.index else 0
+    
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        saldo_atual = df_painel.loc['SALDO FINAL', ultimo_mes] if 'SALDO FINAL' in df_painel.index else 0
-        st.metric(
-            label=f"Saldo Final ({ultimo_mes})",
-            value=f"R$ {saldo_atual:,.2f}",
-            delta=None
-        )
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Saldo Final ({ultimo_mes})</div>
+            <div class="{'positive' if saldo_atual >= 0 else 'negative'}">R$ {saldo_atual:,.2f}</div>
+        </div>
+        """, unsafe_allow_html=True)
     
     with col2:
-        receita_total = df_painel.loc['RECEITAS TOTAL', ultimo_mes] if 'RECEITAS TOTAL' in df_painel.index else 0
-        st.metric(
-            label=f"Receitas ({ultimo_mes})",
-            value=f"R$ {receita_total:,.2f}",
-            delta=None
-        )
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Receitas ({ultimo_mes})</div>
+            <div class="positive">R$ {receita_total:,.2f}</div>
+        </div>
+        """, unsafe_allow_html=True)
     
     with col3:
-        # Calcular despesas totais
-        despesas_total = 0
-        for idx in df_painel.index:
-            if idx not in ['SALDO INICIAL', 'RECEITAS TOTAL', 'SALDO FINAL', 'CAIXA EFETIVO', 'CAIXA EFETIVO ACUMULADO']:
-                valor = df_painel.loc[idx, ultimo_mes]
-                if pd.notna(valor) and valor < 0:
-                    despesas_total += valor
-        st.metric(
-            label=f"Despesas ({ultimo_mes})",
-            value=f"R$ {abs(despesas_total):,.2f}",
-            delta=None
-        )
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">Despesas ({ultimo_mes})</div>
+            <div class="negative">R$ {abs(despesas_total):,.2f}</div>
+        </div>
+        """, unsafe_allow_html=True)
     
     with col4:
-        caixa_efetivo = df_painel.loc['CAIXA EFETIVO', ultimo_mes] if 'CAIXA EFETIVO' in df_painel.index else 0
         cor = "positive" if caixa_efetivo >= 0 else "negative"
         st.markdown(f"""
         <div class="metric-card">
-            <h3>Caixa Efetivo ({ultimo_mes})</h3>
-            <p class="{cor}">R$ {caixa_efetivo:,.2f}</p>
+            <div class="metric-label">Caixa Efetivo ({ultimo_mes})</div>
+            <div class="{cor}">R$ {caixa_efetivo:,.2f}</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -651,13 +677,17 @@ def main():
                 st.metric("Total de Registros", len(df_base))
             with col2:
                 if 'Vl.rateado' in df_base.columns:
-                    total_valor = df_base['Vl.rateado'].sum()
+                    # Garantir que a coluna é numérica
+                    valores = pd.to_numeric(df_base['Vl.rateado'], errors='coerce').fillna(0)
+                    total_valor = valores.sum()
                     st.metric("Valor Total", f"R$ {total_valor:,.2f}")
             with col3:
                 if 'Dt.pagto' in df_base.columns:
-                    datas = pd.to_datetime(df_base['Dt.pagto']).dt.date
-                    periodo = f"{datas.min()} a {datas.max()}"
-                    st.metric("Período", periodo)
+                    datas = pd.to_datetime(df_base['Dt.pagto'], errors='coerce').dt.date
+                    datas = datas.dropna()
+                    if len(datas) > 0:
+                        periodo = f"{datas.min()} a {datas.max()}"
+                        st.metric("Período", periodo)
             
             st.dataframe(df_base, use_container_width=True, height=600)
         else:
