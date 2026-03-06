@@ -736,3 +736,5 @@ else:
         - **Mês**: Mês de referência
         
         ### Exemplo de linhas:
+        Empresa	Segmento	Descrição	Vl.rateado	Valor	Dt.emissao	Mês
+PRO SERVIÇOS LONDRINA	31101001	FATURAMENTO	253.91	2025-08-08	2025-08-08	2025-08-01
