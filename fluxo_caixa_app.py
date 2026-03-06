@@ -1,697 +1,671 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
-import plotly.express as px
+from datetime import datetime
 import plotly.graph_objects as go
-import io
+import plotly.express as px
+from io import BytesIO
 
-# Set page configuration
+# Configuração da página
 st.set_page_config(
-    page_title="Fluxo de Caixa Real - Dashboard",
+    page_title="Fluxo de Caixa Real",
     page_icon="💰",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-# CSS personalizado
-st.markdown("""
-<style>
-    .main-header {
-        font-size: 2.5rem;
-        color: #1E3A8A;
-        font-weight: bold;
-        margin-bottom: 1rem;
-    }
-    .metric-card {
-        background-color: #f0f2f6;
-        border-radius: 10px;
-        padding: 20px;
-        text-align: center;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-    }
-    .positive {
-        color: #10b981;
-        font-weight: bold;
-        font-size: 1.5rem;
-    }
-    .negative {
-        color: #ef4444;
-        font-weight: bold;
-        font-size: 1.5rem;
-    }
-    .metric-label {
-        font-size: 1rem;
-        color: #4b5563;
-        margin-bottom: 0.5rem;
-    }
-    .stDataFrame {
-        font-size: 0.8rem;
-    }
-</style>
-""", unsafe_allow_html=True)
+# ============================================================================
+# ESTRUTURA DO PAINEL (modelo fixo)
+# ============================================================================
+PAINEL_ESTRUTURA = {
+    'SALDO INICIAL': [],
+    'RECEITAS TOTAL': [],
+    'IMPOSTOS SOBRE VENDAS': [],
+    'DESEMBOLSOS FIXOS E VARIÁVEIS': [],
+    'OUTRAS ENTRADAS/SAÍDAS QUE NÃO AFETAM O DRE': [],
+    'ENTRADAS/SAÍDAS FINANCEIRAS': [],
+    'Transferência entre empresas': [],
+    'SALDO FINAL': []
+}
+
+# Categorias para análise detalhada (mapeamento de códigos para categorias)
+CATEGORIAS_DRE = {
+    # Receitas
+    '31101001': 'RECEITAS TOTAL',
+    '31101004': 'RECEITAS TOTAL',
+    
+    # Impostos sobre vendas
+    '61301010': 'IMPOSTOS SOBRE VENDAS',  # PIS
+    '61301011': 'IMPOSTOS SOBRE VENDAS',  # COFINS
+    '61301012': 'IMPOSTOS SOBRE VENDAS',  # ISS
+    '61301013': 'IMPOSTOS SOBRE VENDAS',  # CSLL
+    '61301014': 'IMPOSTOS SOBRE VENDAS',  # IRPJ
+    
+    # Desembolsos Fixos e Variáveis
+    '41101001': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Salários
+    '41101003': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Férias
+    '41101004': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # 13º Salário
+    '41101005': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Folga trabalhada
+    '41101006': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Férias trabalhadas
+    '41101007': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Remuneração sócios
+    '41101008': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # PLR/Prêmios
+    '41101011': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # FGTS
+    '41101012': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # INSS
+    '41101013': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Rescisão
+    '41102001': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Vale refeição
+    '41102002': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Vale transporte
+    '41102003': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Cesta básica
+    '41102004': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Plano de saúde
+    '41102005': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Assistência odontológica
+    '41102006': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Farmácia
+    '41102007': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Cesta básica plus
+    '41102008': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Seguro de vida
+    '41102009': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Cursos externos
+    '41102010': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Cursos internos
+    '41102011': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Roupas/Equipamentos
+    '41103001': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Multa FGTS
+    '41103002': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Acordos trabalhistas
+    '41103003': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Indenizações trabalhistas
+    '41103004': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Depósito recursal
+    '41103005': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Perícia médica
+    '41103006': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Despesas audiências
+    '41104001': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Anúncios
+    '41104002': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Exames médicos
+    '41104004': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Pesquisas
+    '41105001': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Mão de obra terceiros
+    '41201001': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Energia
+    '41201002': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Água
+    '41202001': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Manutenção uniformes
+    '41202002': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Manutenção máquinas
+    '41202003': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Manutenção veículos
+    '41202004': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Manutenção predial
+    '41202006': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Manutenção rede telefônica
+    '41202008': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Materiais consumo
+    '41203001': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Material limpeza
+    '41204001': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Aluguéis imóveis
+    '41204002': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Aluguéis veículos
+    '41204003': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Aluguel máquinas
+    '41204004': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Aluguel móveis
+    '41205001': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Combustíveis
+    '41205002': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Licenciamento/Seguros
+    '41205004': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Multas veículos
+    '41205005': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Monitoramento
+    '41205006': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Comunicação visual
+    '41206001': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Certificado/Vistoria
+    '41206002': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Taxas
+    '41206003': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Seguro empresarial
+    '41206004': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Seguro responsabilidade
+    '41206005': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Contribuição sindical
+    '41206006': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # IPTU
+    '41207001': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Motoboy
+    '41207002': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Correio
+    '41207003': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Telecomunicações
+    '41207005': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Nextel/Claro
+    '41207007': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Internet
+    '41208001': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Viagens
+    '41208002': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Pedágio
+    '41208003': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Táxi/Estacionamento
+    '41208004': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Lanches/Refeições
+    '41208005': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Ajuda de custo
+    '41209001': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Formação pessoal
+    '41209002': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Brindes/Doações
+    '41209003': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Café/Água
+    '41209004': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Material consumo diversos
+    '41209005': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Despesas legais
+    '41209006': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Material escritório
+    '41209009': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Bens pequeno valor
+    '41210001': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Assessoria administrativa
+    '41210002': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Assessoria contábil
+    '41210003': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Assessoria jurídica
+    '41210004': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Assessoria técnica
+    '41210005': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Serviços PF
+    '41210006': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Serviços PJ
+    '41211002': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Comissões
+    '41212001': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Publicidade
+    '41212003': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Feiras/Eventos
+    '41213002': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Brindes clientes
+    '41213003': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # Indenizações clientes
+    '41213004': 'DESEMBOLSOS FIXOS E VARIÁVEIS',  # CMV
+    
+    # Outras entradas/saídas (transferências, aplicações, etc)
+    '61301036': 'OUTRAS ENTRADAS/SAÍDAS QUE NÃO AFETAM O DRE',
+    '61301040': 'OUTRAS ENTRADAS/SAÍDAS QUE NÃO AFETAM O DRE',
+    '61301042': 'OUTRAS ENTRADAS/SAÍDAS QUE NÃO AFETAM O DRE',
+    '61301043': 'OUTRAS ENTRADAS/SAÍDAS QUE NÃO AFETAM O DRE',
+    '61301044': 'OUTRAS ENTRADAS/SAÍDAS QUE NÃO AFETAM O DRE',
+    '61301057': 'OUTRAS ENTRADAS/SAÍDAS QUE NÃO AFETAM O DRE',
+    '61301061': 'OUTRAS ENTRADAS/SAÍDAS QUE NÃO AFETAM O DRE',
+    
+    # Transferência entre empresas
+    '61301069': 'Transferência entre empresas',
+    
+    # Entradas/Saídas Financeiras
+    '61301022': 'ENTRADAS/SAÍDAS FINANCEIRAS',
+    '61301072': 'ENTRADAS/SAÍDAS FINANCEIRAS',
+    '61301077': 'ENTRADAS/SAÍDAS FINANCEIRAS',
+    '61301019': 'ENTRADAS/SAÍDAS FINANCEIRAS',
+    '61301020': 'ENTRADAS/SAÍDAS FINANCEIRAS',
+    '61301037': 'ENTRADAS/SAÍDAS FINANCEIRAS',
+}
 
 # ============================================================================
-# MODELO DO PAINEL (estrutura fixa baseada no arquivo anexo)
+# Funções de processamento
 # ============================================================================
-def criar_modelo_painel():
+@st.cache_data
+def processar_dados(df_base, empresas_selecionadas, data_inicio, data_fim):
     """
-    Cria a estrutura do painel de fluxo de caixa com base no modelo do arquivo anexo.
-    Esta função define a estrutura fixa que será preenchida com os dados da base.
+    Processa os dados da base conforme filtros e estrutura do painel
     """
+    # Converter colunas de data
+    df_base['Mês'] = pd.to_datetime(df_base['Mês'])
+    df_base['Dt.emissao'] = pd.to_datetime(df_base['Dt.emissao'])
     
-    # Datas para o painel (12 meses + 1 futuro)
-    datas = []
-    for i in range(1, 13):
-        datas.append(datetime(2025, i, 1))
-    datas.append(datetime(2026, 1, 1))  # Janeiro/2026
+    # Aplicar filtros
+    df_filtrado = df_base[
+        (df_base['Empresa'].isin(empresas_selecionadas)) &
+        (df_base['Mês'] >= data_inicio) &
+        (df_base['Mês'] <= data_fim)
+    ].copy()
     
-    # Estrutura do painel (linhas)
-    estrutura_painel = [
-        "SALDO INICIAL",
-        "",
-        "RECEITAS TOTAL",
-        "FATURAMENTO",
-        "FATURAMENTO - devedores",
-        "INSS RETIDO EM NOTA",
-        "DEPOSITO A IDENTIFICAR",
-        "",
-        "IMPOSTOS SOBRE VENDAS",
-        ". ISS",
-        ". PIS",
-        ". COFINS",
-        ". DEPÓSITO JUDICIAL",
-        "",
-        "DESEMBOLSOS FIXOS  E VARIÁVEIS",
-        "SALARIOS E ENCARGOS",
-        ". SALÁRIOS",
-        ". HORAS EXTRAS",
-        ". FÉRIAS",
-        ". 13º SALÁRIO",
-        ". FOLGA TRABALHADA",
-        ". FÉRIAS TRABALHADAS",
-        ". REMUNERAÇÃO SÓCIOS",
-        ". PLR/PRÊMIOS",
-        ". FAP",
-        ". INSS-AVISO INDENIZADO",
-        ". FGTS FOLHA",
-        ". INSS FOLHA",
-        ". RESCISÃO CONTRATUAL",
-        "BENEFÍCIOS",
-        ". VALE REFEIÇÃO",
-        ". VALE TRANSPORTE",
-        ". CESTA BÁSICA",
-        ". PLANO DE SAÚDE",
-        ". ASSISTÊNCIA ADONTOLOGICA",
-        ". FARMÁCIA E MEDICAMENTOS",
-        ". CESTA BÁSCIA COMPLEMENTAR",
-        ". SEGURO DE VIDA EM GRUPO",
-        ". CURSOS/TREINAMENTOS - EXTERNO",
-        ". CURSOS/TREINAMENTOS - INTERNOS",
-        ". ROUPAS E EQUIP TRABALHO",
-        ". CONVÊNIO FUNCIONÁRIOS",
-        ". PRÊMIO ASSIDUIDADE/BOA PERMANE",
-        "ASPECTOS TRABALHISTAS",
-        ". MULTA FGTS",
-        ". ACORDOS TRABALHISTAS",
-        ". INDENIZAÇÕES",
-        ". PERÍCIA MÉDICA",
-        ". DESPESAS - AUDIÊNCIAS",
-        "CUSTOS DE ADMISSÃO",
-        ". ANÚNCIOS/AGÊNCIA DE EMPREGO",
-        ". EXAMES MÉDICOS",
-        ". EXAMES PSICOTÉCNICOS",
-        ". PESQUISAS E INVESTIGAÇÕES",
-        "MÃO DE OBRA TERCEIROS",
-        ". MÃO DE OBRA TERCEIROS",
-        ". OUTROS CUSTOS",
-        "ENERGIAS",
-        ". ENERGIA ELETRICA",
-        ". AGUA",
-        "MANUTENÇÃO",
-        ". MANUTENÇÃO UNIFORMES",
-        ". MANUTENÇÃO MÁQUINAS E EQUIP",
-        ". MANUT VEÍCULOS/SINISTRO INTERN",
-        ". MANUTENÇÃO PREDIAL",
-        ". MANUTENÇÃO ESCRITÓRIO",
-        ". MANUTENÇÃO REDE TELEFÔNICA",
-        ". MANUTENÇÃO E EQUIP INFORMATICA",
-        ". MATERIAIS CONSUMO MANUTENÇÃO",
-        ". SERV. PRESTADOS 3º MANUTENÇÃO",
-        ". FRETES S/ COMPRAS MAT MANUTEN",
-        "MATERIAL DE LIMPEZA",
-        ". MATERIAL DE LIMPEZA",
-        "ALUGUÉIS",
-        ". ALUGUÉIS DE IMÓVEIS",
-        ". ALUGUÉIS DE VEÍCULOS",
-        ". ALUGUEL DE MÁQ E EQUIPAMENTOS",
-        ". ALUGUEL DE MÓVEIS E UTENSÍLIOS",
-        "DESPESAS COM VEÍCULOS",
-        ". COMBUSTÍVEIS",
-        ". LICENC/SEGURO/SEG OBR/DPVAT/IN",
-        ". MULTAS DE VEÍCULOS",
-        ". MONITORAMENTO VEÍCULOS",
-        ". COMUNICAÇÃO VISUAL",
-        "IMPOSTOS, TAXAS E SEGUROS",
-        ". RENOVAÇÃO CERTIFICADO/VISTORIA",
-        ". TAXAS (MUNICIPAL/ESTADUAL/FEDE",
-        ". SEGURO EMPRESARIAL",
-        ". SEGURO RESPONSABILIDADE CIVIL",
-        ". CONTR SINDICAL/ASSOCIAÇOES",
-        ". IPTU",
-        "COMUNICAÇÕES",
-        ". MOTOBOY",
-        ". CORREIO",
-        ". TELECOMUNICAÇÕES - TEL FIXO",
-        ". TELECOMUNICAÇÕES - CELULAR",
-        ". NEXTEL/CLARO",
-        ". LINHA PROCESSAMENTO",
-        ". INTERNET",
-        "VIAGENS E LOCOMOÇÃO",
-        ". VIAGENS E ESTADIAS",
-        ". PEDÁGIO",
-        ". TAXI/ÔNIBUS/ESTACIONAMENTO",
-        ". LANCHES E REFEIÇÕES",
-        ". AJUDA DE CUSTO-REPRESENTANTES",
-        "ADMINISTRAÇÃO",
-        ". FORMAÇÃO PESSOAL/TREINAMENTO",
-        ". BRINDES/DOAÇÕES/EVENTOS INTERN",
-        ". CAFÉ/AGUA/MATERIAL COPA",
-        ". MATERIAL DE CONSUMO DIVERSOS",
-        ". DESPESAS LEGAIS/JUD/CARTORIO",
-        ". IMPRESSOS E MATERIAL DE ESCRIT",
-        ". ASSINATURAS DIVERSAS",
-        ". MOTO BOY",
-        ". BENS PEQ VALOR/MATERIAL POSTO",
-        ". MULTAS INDEDUTIVEIS",
-        ". OUTRAS DESPESAS INDEDUTÍVEIS",
-        "SERVIÇOS CONTRATADOS",
-        ". ASSESSORIA ADMINISTRATIVA",
-        ". ASSESSORIA CONTÁBIL",
-        ". ASSESSORIA JURÍDICA",
-        ". ASSESSORIA TÉCNICA",
-        ". SERVIÇOS PRESTADOS 3º - PF",
-        ". SERVIÇOS PRESTADOS 3º - PJ",
-        "COMISSÕES",
-        ". COMISSÕES REPRESENTANTES",
-        ". OUTRAS COMISSÕES",
-        "DESPESAS COM MARKETING",
-        ". PUBLICIDADE E PROPAGANDA",
-        ". JORNAIS E REVISTAS",
-        ". FEIRA E EVENTOS",
-        ". NOVOS PROJETOS/EXPANSÃO/PESQUI",
-        "DESPESAS COM CLIENTES",
-        ". PERDAS COM CLIENTES",
-        ". BRINDES PARA CLIENTES",
-        ". INDENIZAÇÕES COM CLIENTES",
-        ". CMV - MODELO MGV - ANTIGO PDD",
-        "",
-        "OUTRAS ENTRADAS / SAÍDAS QUE NÃO AFETAM O DRE",
-        "OUTROS IMPOSTOS",
-        ". INTERCOMPANY SUPERVISÃO SIA",
-        ". INTERCOMPANY PROPAR / SIA",
-        ". NTERCOMPANY PROPAR / PRO",
-        ". INTERCOMPANY PROPAR / PRO CLEAN",
-        "IR",
-        "CSLL",
-        "REFIS",
-        "OUTRAS SAÍDAS",
-        ". DEPÓSITO RECURSAL/Simples Sensor",
-        ". BLOQUEIO JUDICIAL",
-        "INVESTIMENTOS",
-        ". SOFTWARE",
-        ". MAQUINAS E EQUIPAMENTOS",
-        ". MÓVEIS E UTENSÍLIOS",
-        ". VEÍCULOS / IMÓVEIS",
-        ". APORTE/AQUISIÇÃO DE EMPRESAS",
-        "DISTRIBUIÇÃO",
-        "RESCISÃO FÁBIO",
-        "DISTRIBUIÇÃO DIVIDENDOS",
-        "",
-        "ENTRADAS / SAÍDAS FINANCEIRAS",
-        ". RECEITAS FINANCEIRAS",
-        ". CCB - CÉDULA CRÉDITO BANCÁRIO - CREDITO",
-        ". CCB - CÉDULA CRÉDITO BANCÁRIO - DEBITO",
-        ". RECEITA FINANCEIRA CCB",
-        ". DESP BANCÁRIAS/BLOQUEIO JUD/IR S/ APLICAÇÕES",
-        "",
-        "Transferência entre empresas",
-        "",
-        "SALDO FINAL",
-        "",
-        "CAIXA EFETIVO",
-        "",
-        "CAIXA EFETIVO ACUMULADO"
+    # Extrair mês/ano para agrupamento
+    df_filtrado['Ano_Mes'] = df_filtrado['Mês'].dt.to_period('M')
+    
+    # Lista de meses no período
+    meses_periodo = pd.period_range(data_inicio, data_fim, freq='M')
+    
+    # Inicializar dicionário para resultados
+    resultados = {categoria: {mes: 0 for mes in meses_periodo} 
+                  for categoria in PAINEL_ESTRUTURA.keys()}
+    
+    # Processar cada linha
+    for _, row in df_filtrado.iterrows():
+        categoria = CATEGORIAS_DRE.get(str(row['Segmento']), None)
+        if categoria and categoria in resultados:
+            mes = row['Ano_Mes']
+            if mes in resultados[categoria]:
+                resultados[categoria][mes] += row['Vl.rateado']
+    
+    # Calcular saldo inicial (Janeiro 2025)
+    saldo_inicial_janeiro = 6355160.795000029  # Valor do painel
+    
+    # Calcular saldos acumulados
+    saldos_finais = {}
+    saldo_acumulado = saldo_inicial_janeiro
+    
+    for mes in sorted(meses_periodo):
+        # Receitas (positivas)
+        receitas = resultados['RECEITAS TOTAL'][mes]
+        
+        # Despesas (negativas - considerando que já estão negativas na base)
+        despesas_totais = (
+            resultados['IMPOSTOS SOBRE VENDAS'][mes] +
+            resultados['DESEMBOLSOS FIXOS E VARIÁVEIS'][mes] +
+            resultados['OUTRAS ENTRADAS/SAÍDAS QUE NÃO AFETAM O DRE'][mes] +
+            resultados['ENTRADAS/SAÍDAS FINANCEIRAS'][mes] +
+            resultados['Transferência entre empresas'][mes]
+        )
+        
+        # Calcular saldo do mês
+        saldo_mes = receitas + despesas_totais  # despesas já são negativas
+        saldo_acumulado += saldo_mes
+        saldos_finais[mes] = saldo_acumulado
+    
+    resultados['SALDO INICIAL'] = {meses_periodo[0]: saldo_inicial_janeiro}
+    resultados['SALDO FINAL'] = saldos_finais
+    
+    return resultados, meses_periodo
+
+def formatar_valor(valor):
+    """Formata valor monetário"""
+    if pd.isna(valor) or valor == 0:
+        return "R$ 0,00"
+    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+def criar_dataframe_resultados(resultados, meses_periodo):
+    """Cria DataFrame com os resultados para exibição"""
+    dados = []
+    
+    for categoria in PAINEL_ESTRUTURA.keys():
+        linha = {'Categoria': categoria}
+        for mes in meses_periodo:
+            valor = resultados.get(categoria, {}).get(mes, 0)
+            linha[str(mes)] = valor
+        dados.append(linha)
+    
+    df_resultados = pd.DataFrame(dados)
+    
+    # Adicionar linha de totais
+    totais = {'Categoria': 'TOTAL'}
+    for mes in meses_periodo:
+        soma = df_resultados[df_resultados['Categoria'].isin([
+            'RECEITAS TOTAL', 'IMPOSTOS SOBRE VENDAS', 
+            'DESEMBOLSOS FIXOS E VARIÁVEIS', 
+            'OUTRAS ENTRADAS/SAÍDAS QUE NÃO AFETAM O DRE',
+            'ENTRADAS/SAÍDAS FINANCEIRAS', 'Transferência entre empresas'
+        ])][str(mes)].sum()
+        totais[str(mes)] = soma
+    
+    df_resultados = pd.concat([df_resultados, pd.DataFrame([totais])], ignore_index=True)
+    
+    return df_resultados
+
+def criar_grafico_fluxo(resultados, meses_periodo):
+    """Cria gráfico de fluxo de caixa"""
+    meses_str = [str(mes) for mes in meses_periodo]
+    
+    receitas = [resultados['RECEITAS TOTAL'].get(mes, 0) for mes in meses_periodo]
+    despesas = [
+        resultados['IMPOSTOS SOBRE VENDAS'].get(mes, 0) +
+        resultados['DESEMBOLSOS FIXOS E VARIÁVEIS'].get(mes, 0) +
+        resultados['OUTRAS ENTRADAS/SAÍDAS QUE NÃO AFETAM O DRE'].get(mes, 0) +
+        resultados['ENTRADAS/SAÍDAS FINANCEIRAS'].get(mes, 0) +
+        resultados['Transferência entre empresas'].get(mes, 0)
+        for mes in meses_periodo
     ]
     
-    # Criar DataFrame vazio do painel
-    df_painel = pd.DataFrame(index=estrutura_painel)
+    saldo_final = [resultados['SALDO FINAL'].get(mes, 0) for mes in meses_periodo]
     
-    # Adicionar colunas de data
-    for i, data in enumerate(datas):
-        col_name = data.strftime('%Y-%m')
-        df_painel[col_name] = 0.0
+    fig = go.Figure()
     
-    return df_painel, datas
+    fig.add_trace(go.Bar(
+        name='Receitas',
+        x=meses_str,
+        y=receitas,
+        marker_color='#2ecc71',
+        text=[formatar_valor(v) for v in receitas],
+        textposition='outside'
+    ))
+    
+    fig.add_trace(go.Bar(
+        name='Despesas',
+        x=meses_str,
+        y=despesas,
+        marker_color='#e74c3c',
+        text=[formatar_valor(v) for v in despesas],
+        textposition='outside'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        name='Saldo Final',
+        x=meses_str,
+        y=saldo_final,
+        mode='lines+markers',
+        line=dict(color='#3498db', width=3),
+        marker=dict(size=8),
+        yaxis='y2',
+        text=[formatar_valor(v) for v in saldo_final],
+        textposition='top center'
+    ))
+    
+    fig.update_layout(
+        title='Fluxo de Caixa - Receitas vs Despesas',
+        barmode='group',
+        xaxis_title='Mês',
+        yaxis_title='Valor (R$)',
+        yaxis2=dict(
+            title='Saldo Final (R$)',
+            overlaying='y',
+            side='right'
+        ),
+        hovermode='x unified',
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        ),
+        height=500
+    )
+    
+    return fig
+
+def criar_grafico_saldo(resultados, meses_periodo):
+    """Cria gráfico de evolução do saldo"""
+    meses_str = [str(mes) for mes in meses_periodo]
+    saldo_inicial = [resultados['SALDO INICIAL'].get(mes, 0) for mes in meses_periodo]
+    saldo_final = [resultados['SALDO FINAL'].get(mes, 0) for mes in meses_periodo]
+    
+    fig = go.Figure()
+    
+    fig.add_trace(go.Scatter(
+        name='Saldo Inicial',
+        x=meses_str,
+        y=saldo_inicial,
+        mode='lines+markers',
+        line=dict(color='#f39c12', width=2, dash='dash'),
+        marker=dict(size=6),
+        text=[formatar_valor(v) for v in saldo_inicial],
+        textposition='top center'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        name='Saldo Final',
+        x=meses_str,
+        y=saldo_final,
+        mode='lines+markers',
+        line=dict(color='#27ae60', width=3),
+        marker=dict(size=8),
+        text=[formatar_valor(v) for v in saldo_final],
+        textposition='top center'
+    ))
+    
+    fig.update_layout(
+        title='Evolução do Saldo',
+        xaxis_title='Mês',
+        yaxis_title='Saldo (R$)',
+        hovermode='x unified',
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        ),
+        height=400
+    )
+    
+    return fig
+
+def exportar_excel(df_resultados):
+    """Exporta DataFrame para Excel"""
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_resultados.to_excel(writer, sheet_name='Fluxo de Caixa', index=False)
+    return output.getvalue()
 
 # ============================================================================
-# FUNÇÕES DE PROCESSAMENTO
+# Interface Principal
 # ============================================================================
-def carregar_dados_base(uploaded_file):
-    """Carrega e processa o arquivo de base Excel"""
-    try:
-        # Ler o arquivo Excel, especificando a aba 'Base'
-        df_base = pd.read_excel(uploaded_file, sheet_name='Base', engine='openpyxl')
-        return df_base
-    except Exception as e:
-        st.error(f"Erro ao carregar o arquivo: {e}")
-        return None
+st.title("💰 Fluxo de Caixa Real")
+st.markdown("---")
 
-def processar_base_para_painel(df_base, df_painel, datas, filtros=None):
-    """
-    Processa os dados da base e preenche o painel.
-    Aplica filtros de empresa, cliente e data quando fornecidos.
-    """
-    # Criar cópia para não modificar o original
-    df_painel_filled = df_painel.copy()
-    df_base_filtered = df_base.copy() if df_base is not None else pd.DataFrame()
+# Sidebar - Filtros e Upload
+with st.sidebar:
+    st.header("📁 Upload da Base")
     
-    # Aplicar filtros se fornecidos
-    if filtros and df_base_filtered is not None and not df_base_filtered.empty:
-        if 'Empresa' in filtros and filtros['Empresa'] and 'Fantasia' in df_base_filtered.columns:
-            df_base_filtered = df_base_filtered[df_base_filtered['Fantasia'].str.contains(filtros['Empresa'], na=False, case=False)]
-        
-        if 'Cliente' in filtros and filtros['Cliente'] and 'Fantasia' in df_base_filtered.columns:
-            df_base_filtered = df_base_filtered[df_base_filtered['Fantasia'].str.contains(filtros['Cliente'], na=False, case=False)]
-        
-        if 'Data Início' in filtros and filtros['Data Início'] and 'Dt.pagto' in df_base_filtered.columns:
-            df_base_filtered = df_base_filtered[pd.to_datetime(df_base_filtered['Dt.pagto']) >= pd.to_datetime(filtros['Data Início'])]
-        
-        if 'Data Fim' in filtros and filtros['Data Fim'] and 'Dt.pagto' in df_base_filtered.columns:
-            df_base_filtered = df_base_filtered[pd.to_datetime(df_base_filtered['Dt.pagto']) <= pd.to_datetime(filtros['Data Fim'])]
+    uploaded_file = st.file_uploader(
+        "Escolha o arquivo Excel com a base de dados",
+        type=['xlsx', 'xls'],
+        help="Formato esperado: arquivo com colunas Empresa, Segmento, Descrição, Vl.rateado, Valor, Dt.emissao, Mês"
+    )
     
-    # Se não há dados, retornar painel vazio
-    if df_base_filtered is None or df_base_filtered.empty:
-        return df_painel_filled
+    st.markdown("---")
+    st.header("🔍 Filtros")
     
-    # Converter todas as colunas do painel para numérico
-    for col in df_painel_filled.columns:
-        df_painel_filled[col] = pd.to_numeric(df_painel_filled[col], errors='coerce').fillna(0)
-    
-    # Agrupar por descrição e mês
-    # Criar coluna de mês a partir da data de pagamento
-    if 'Dt.pagto' in df_base_filtered.columns:
-        df_base_filtered['Mês'] = pd.to_datetime(df_base_filtered['Dt.pagto']).dt.to_period('M')
-        
-        # Garantir que Vl.rateado é numérico
-        df_base_filtered['Vl.rateado'] = pd.to_numeric(df_base_filtered['Vl.rateado'], errors='coerce').fillna(0)
-        
-        # Agrupar por descrição e mês, somando os valores
-        grouped = df_base_filtered.groupby(['Descrição', 'Mês'])['Vl.rateado'].sum().reset_index()
-        
-        # Preencher o painel
-        for _, row in grouped.iterrows():
-            descricao = row['Descrição']
-            mes = row['Mês']
-            valor = row['Vl.rateado']
+    if uploaded_file is not None:
+        try:
+            df_base = pd.read_excel(uploaded_file, sheet_name='Base')
             
-            # Converter período para string no formato YYYY-MM
-            mes_str = str(mes)
+            # Lista única de empresas
+            empresas = sorted(df_base['Empresa'].dropna().unique())
             
-            # Verificar se a descrição existe no painel
-            if descricao in df_painel_filled.index and mes_str in df_painel_filled.columns:
-                df_painel_filled.loc[descricao, mes_str] += valor
-    
-    return df_painel_filled
+            empresas_selecionadas = st.multiselect(
+                "Selecione as empresas",
+                options=empresas,
+                default=empresas
+            )
+            
+            # Filtro de data
+            datas_disponiveis = pd.to_datetime(df_base['Mês']).dt.date.unique()
+            data_min = pd.to_datetime(min(datas_disponiveis))
+            data_max = pd.to_datetime(max(datas_disponiveis))
+            
+            st.write("Período de análise")
+            col1, col2 = st.columns(2)
+            with col1:
+                data_inicio = st.date_input(
+                    "Data inicial",
+                    value=data_min,
+                    min_value=data_min,
+                    max_value=data_max
+                )
+            with col2:
+                data_fim = st.date_input(
+                    "Data final",
+                    value=data_max,
+                    min_value=data_min,
+                    max_value=data_max
+                )
+            
+            if data_inicio > data_fim:
+                st.error("Data inicial não pode ser maior que data final")
+                st.stop()
+            
+            st.markdown("---")
+            st.info(f"📊 Registros na base: {len(df_base):,}")
+            
+        except Exception as e:
+            st.error(f"Erro ao ler arquivo: {str(e)}")
+            st.stop()
+    else:
+        st.warning("Por favor, faça o upload do arquivo de base")
+        
+        # Dados exemplo para demonstração
+        st.markdown("---")
+        st.info("ℹ️ Use o arquivo exemplo para demonstração")
+        if st.button("Usar dados exemplo"):
+            st.session_state['usar_exemplo'] = True
+            st.rerun()
 
-def calcular_saldos(df_painel_filled):
-    """
-    Calcula os saldos inicial e final com base nos dados.
-    """
-    # Identificar colunas de mês (assumindo que são todas as colunas)
-    meses_cols = df_painel_filled.columns.tolist()
+# Área Principal
+if uploaded_file is not None or st.session_state.get('usar_exemplo', False):
     
-    # Garantir que todos os valores são numéricos
-    for col in meses_cols:
-        df_painel_filled[col] = pd.to_numeric(df_painel_filled[col], errors='coerce').fillna(0)
-    
-    # SALDO INICIAL - primeiro mês
-    if 'SALDO INICIAL' in df_painel_filled.index and len(meses_cols) > 0:
-        primeiro_mes = meses_cols[0]
-        # Se o saldo inicial estiver vazio, definir como 0
-        if pd.isna(df_painel_filled.loc['SALDO INICIAL', primeiro_mes]) or df_painel_filled.loc['SALDO INICIAL', primeiro_mes] == 0:
-            df_painel_filled.loc['SALDO INICIAL', primeiro_mes] = 6355160.80  # Valor do arquivo original
-    
-    # Calcular saldos subsequentes
-    for i in range(len(meses_cols)):
-        mes_atual = meses_cols[i]
+    if st.session_state.get('usar_exemplo', False) and uploaded_file is None:
+        # Carregar dados exemplo do arquivo anexo
+        # Nota: Na prática, você teria um arquivo exemplo embutido
+        st.warning("Modo demonstração - usando dados do arquivo anexo")
         
-        # Calcular saldo inicial para meses seguintes
-        if i > 0:
-            mes_anterior = meses_cols[i-1]
-            if 'SALDO FINAL' in df_painel_filled.index:
-                saldo_anterior = df_painel_filled.loc['SALDO FINAL', mes_anterior]
-                if 'SALDO INICIAL' in df_painel_filled.index:
-                    df_painel_filled.loc['SALDO INICIAL', mes_atual] = saldo_anterior
-        
-        # Calcular receitas totais
-        receitas_indices = ['FATURAMENTO', 'FATURAMENTO - devedores', 'INSS RETIDO EM NOTA', 'DEPOSITO A IDENTIFICAR']
-        if 'RECEITAS TOTAL' in df_painel_filled.index:
-            receitas_total = 0
-            for idx in receitas_indices:
-                if idx in df_painel_filled.index:
-                    receitas_total += df_painel_filled.loc[idx, mes_atual]
-            df_painel_filled.loc['RECEITAS TOTAL', mes_atual] = receitas_total
-        
-        # Calcular saldo final
-        if 'SALDO FINAL' in df_painel_filled.index:
-            saldo_inicial = df_painel_filled.loc['SALDO INICIAL', mes_atual] if 'SALDO INICIAL' in df_painel_filled.index else 0
-            receitas = df_painel_filled.loc['RECEITAS TOTAL', mes_atual] if 'RECEITAS TOTAL' in df_painel_filled.index else 0
-            
-            # Somar todas as saídas (valores negativos)
-            saidas = 0
-            for idx in df_painel_filled.index:
-                if idx not in ['SALDO INICIAL', 'RECEITAS TOTAL', 'SALDO FINAL', 'CAIXA EFETIVO', 'CAIXA EFETIVO ACUMULADO', '']:
-                    valor = df_painel_filled.loc[idx, mes_atual]
-                    if valor < 0:  # Agora todos são numéricos
-                        saidas += valor
-            
-            df_painel_filled.loc['SALDO FINAL', mes_atual] = saldo_inicial + receitas + saidas
-        
-        # Calcular caixa efetivo (variação)
-        if 'CAIXA EFETIVO' in df_painel_filled.index:
-            saldo_inicial = df_painel_filled.loc['SALDO INICIAL', mes_atual] if 'SALDO INICIAL' in df_painel_filled.index else 0
-            saldo_final = df_painel_filled.loc['SALDO FINAL', mes_atual] if 'SALDO FINAL' in df_painel_filled.index else 0
-            df_painel_filled.loc['CAIXA EFETIVO', mes_atual] = saldo_final - saldo_inicial
+        # Simular carregamento
+        df_base = pd.read_excel('Fluxo.xlsx', sheet_name='Base')
+        empresas = sorted(df_base['Empresa'].dropna().unique())
+        empresas_selecionadas = empresas
+        data_inicio = datetime(2025, 1, 1)
+        data_fim = datetime(2025, 3, 31)
+    else:
+        empresas_selecionadas = empresas_selecionadas
+        data_inicio = datetime.combine(data_inicio, datetime.min.time())
+        data_fim = datetime.combine(data_fim, datetime.min.time())
     
-    # Calcular caixa efetivo acumulado
-    if 'CAIXA EFETIVO ACUMULADO' in df_painel_filled.index:
-        acumulado = 0
-        for mes in meses_cols:
-            if 'CAIXA EFETIVO' in df_painel_filled.index:
-                acumulado += df_painel_filled.loc['CAIXA EFETIVO', mes]
-            df_painel_filled.loc['CAIXA EFETIVO ACUMULADO', mes] = acumulado
-    
-    return df_painel_filled
-
-# ============================================================================
-# FUNÇÕES DE VISUALIZAÇÃO
-# ============================================================================
-def exibir_painel(df_painel):
-    """Exibe o painel completo formatado"""
-    
-    # Criar cópia para exibição
-    df_display = df_painel.copy()
-    
-    # Formatar números
-    for col in df_display.columns:
-        df_display[col] = df_display[col].apply(lambda x: f"R$ {x:,.2f}" if pd.notna(x) else "R$ 0,00")
-    
-    st.dataframe(df_display, use_container_width=True, height=800)
-
-def exibir_graficos(df_painel):
-    """Exibe gráficos de análise"""
-    
-    # Preparar dados
-    meses = df_painel.columns.tolist()
-    
-    # Gráfico de Saldo Inicial vs Final
-    if 'SALDO INICIAL' in df_painel.index and 'SALDO FINAL' in df_painel.index:
-        saldo_inicial = [df_painel.loc['SALDO INICIAL', mes] for mes in meses]
-        saldo_final = [df_painel.loc['SALDO FINAL', mes] for mes in meses]
-        
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=meses, y=saldo_inicial, mode='lines+markers', name='Saldo Inicial'))
-        fig.add_trace(go.Scatter(x=meses, y=saldo_final, mode='lines+markers', name='Saldo Final'))
-        
-        fig.update_layout(
-            title='Evolução do Saldo',
-            xaxis_title='Mês',
-            yaxis_title='Valor (R$)',
-            hovermode='x unified',
-            height=500
+    # Processar dados
+    with st.spinner("Processando dados..."):
+        resultados, meses_periodo = processar_dados(
+            df_base, empresas_selecionadas, data_inicio, data_fim
         )
-        
-        st.plotly_chart(fig, use_container_width=True)
     
-    # Gráfico de Receitas vs Despesas
-    if 'RECEITAS TOTAL' in df_painel.index:
-        receitas = [df_painel.loc['RECEITAS TOTAL', mes] for mes in meses]
-        
-        # Calcular despesas totais (soma de todos os negativos que não são receitas)
-        despesas = []
-        for mes in meses:
-            total_despesas = 0
-            for idx in df_painel.index:
-                if idx not in ['SALDO INICIAL', 'RECEITAS TOTAL', 'SALDO FINAL', 'CAIXA EFETIVO', 'CAIXA EFETIVO ACUMULADO', '']:
-                    valor = df_painel.loc[idx, mes]
-                    if valor < 0:
-                        total_despesas += valor
-            despesas.append(abs(total_despesas))
-        
-        fig = go.Figure()
-        fig.add_trace(go.Bar(x=meses, y=receitas, name='Receitas', marker_color='#10b981'))
-        fig.add_trace(go.Bar(x=meses, y=despesas, name='Despesas', marker_color='#ef4444'))
-        
-        fig.update_layout(
-            title='Receitas vs Despesas',
-            xaxis_title='Mês',
-            yaxis_title='Valor (R$)',
-            barmode='group',
-            height=500
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
-
-def exibir_metricas_principais(df_painel):
-    """Exibe métricas principais em cards"""
-    
-    meses = df_painel.columns.tolist()
-    ultimo_mes = meses[-2] if len(meses) > 1 else meses[0]  # Último mês do ano
-    
-    # Garantir que os valores são numéricos
-    saldo_atual = float(df_painel.loc['SALDO FINAL', ultimo_mes]) if 'SALDO FINAL' in df_painel.index else 0
-    receita_total = float(df_painel.loc['RECEITAS TOTAL', ultimo_mes]) if 'RECEITAS TOTAL' in df_painel.index else 0
-    
-    # Calcular despesas totais
-    despesas_total = 0
-    for idx in df_painel.index:
-        if idx not in ['SALDO INICIAL', 'RECEITAS TOTAL', 'SALDO FINAL', 'CAIXA EFETIVO', 'CAIXA EFETIVO ACUMULADO', '']:
-            valor = float(df_painel.loc[idx, ultimo_mes])
-            if valor < 0:
-                despesas_total += valor
-    
-    caixa_efetivo = float(df_painel.loc['CAIXA EFETIVO', ultimo_mes]) if 'CAIXA EFETIVO' in df_painel.index else 0
+    # Métricas principais
+    st.header("📊 Resumo do Período")
     
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Saldo Final ({ultimo_mes})</div>
-            <div class="{'positive' if saldo_atual >= 0 else 'negative'}">R$ {saldo_atual:,.2f}</div>
-        </div>
-        """, unsafe_allow_html=True)
+        total_receitas = sum(resultados['RECEITAS TOTAL'].values())
+        st.metric(
+            "Total Receitas",
+            formatar_valor(total_receitas),
+            delta=None
+        )
     
     with col2:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Receitas ({ultimo_mes})</div>
-            <div class="positive">R$ {receita_total:,.2f}</div>
-        </div>
-        """, unsafe_allow_html=True)
+        total_despesas = sum(
+            resultados['IMPOSTOS SOBRE VENDAS'].values()
+        ) + sum(resultados['DESEMBOLSOS FIXOS E VARIÁVEIS'].values())
+        st.metric(
+            "Total Despesas",
+            formatar_valor(abs(total_despesas)),
+            delta=None
+        )
     
     with col3:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Despesas ({ultimo_mes})</div>
-            <div class="negative">R$ {abs(despesas_total):,.2f}</div>
-        </div>
-        """, unsafe_allow_html=True)
+        saldo_inicial = resultados['SALDO INICIAL'].get(meses_periodo[0], 0)
+        st.metric(
+            "Saldo Inicial",
+            formatar_valor(saldo_inicial),
+            delta=None
+        )
     
     with col4:
-        cor = "positive" if caixa_efetivo >= 0 else "negative"
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Caixa Efetivo ({ultimo_mes})</div>
-            <div class="{cor}">R$ {caixa_efetivo:,.2f}</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-# ============================================================================
-# APLICAÇÃO PRINCIPAL
-# ============================================================================
-def main():
-    st.markdown('<p class="main-header">💰 Fluxo de Caixa Real - Dashboard</p>', unsafe_allow_html=True)
-    
-    # Sidebar - Filtros e upload
-    with st.sidebar:
-        st.header("📁 Upload da Base")
-        uploaded_file = st.file_uploader(
-            "Carregar arquivo Excel (aba 'Base')",
-            type=['xlsx'],
-            help="Formato esperado: arquivo com aba 'Base' contendo as transações"
+        saldo_final = resultados['SALDO FINAL'].get(meses_periodo[-1], 0)
+        variacao = saldo_final - saldo_inicial
+        delta_color = "normal" if variacao >= 0 else "inverse"
+        st.metric(
+            "Saldo Final",
+            formatar_valor(saldo_final),
+            delta=f"{formatar_valor(variacao)}",
+            delta_color=delta_color
         )
-        
-        st.divider()
-        
-        st.header("🔍 Filtros")
-        
-        # Obter opções para filtros se houver dados
-        empresas = []
-        clientes = []
-        if uploaded_file and 'df_base' in st.session_state and st.session_state.df_base is not None:
-            df_base = st.session_state.df_base
-            if 'Fantasia' in df_base.columns:
-                empresas = df_base['Fantasia'].dropna().unique().tolist()
-                clientes = df_base['Fantasia'].dropna().unique().tolist()
-        
-        filtro_empresa = st.selectbox(
-            "Empresa",
-            options=["Todas"] + empresas,
-            index=0
-        )
-        
-        filtro_cliente = st.selectbox(
-            "Cliente",
-            options=["Todos"] + clientes,
-            index=0
-        )
-        
-        st.subheader("Período")
-        col1, col2 = st.columns(2)
-        with col1:
-            data_inicio = st.date_input(
-                "Data Início",
-                value=datetime(2025, 1, 1)
-            )
-        with col2:
-            data_fim = st.date_input(
-                "Data Fim",
-                value=datetime(2025, 12, 31)
-            )
-        
-        st.divider()
-        
-        st.header("⚙️ Ações")
-        if st.button("🔄 Atualizar Dashboard", use_container_width=True, type="primary"):
-            st.session_state.atualizar = True
-        
-        if st.button("📊 Exportar Painel", use_container_width=True):
-            if 'df_painel_filled' in st.session_state:
-                # Converter para Excel
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    st.session_state.df_painel_filled.to_excel(writer, sheet_name='Painel')
-                st.download_button(
-                    label="📥 Download Excel",
-                    data=output.getvalue(),
-                    file_name="fluxo_caixa_painel.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
     
-    # Área principal
-    tab1, tab2, tab3 = st.tabs(["📋 Painel Completo", "📈 Análise Gráfica", "📊 Base de Dados"])
+    st.markdown("---")
     
-    # Inicializar session state
-    if 'df_painel' not in st.session_state:
-        st.session_state.df_painel, st.session_state.datas = criar_modelo_painel()
+    # Gráficos
+    st.header("📈 Análise Gráfica")
     
-    if 'df_painel_filled' not in st.session_state:
-        st.session_state.df_painel_filled = st.session_state.df_painel.copy()
+    tab1, tab2 = st.tabs(["Receitas vs Despesas", "Evolução do Saldo"])
     
-    # Processar novo arquivo se carregado
-    if uploaded_file is not None:
-        df_base = carregar_dados_base(uploaded_file)
-        if df_base is not None:
-            st.session_state.df_base = df_base
-            st.sidebar.success(f"✅ Base carregada: {len(df_base)} registros")
-    
-    # Aplicar filtros e atualizar
-    if 'df_base' in st.session_state and st.session_state.get('atualizar', False):
-        with st.spinner("Processando dados..."):
-            # Criar filtros
-            filtros = {}
-            if filtro_empresa != "Todas":
-                filtros['Empresa'] = filtro_empresa
-            if filtro_cliente != "Todos":
-                filtros['Cliente'] = filtro_cliente
-            filtros['Data Início'] = data_inicio
-            filtros['Data Fim'] = data_fim
-            
-            # Processar
-            df_painel_filled = processar_base_para_painel(
-                st.session_state.df_base,
-                st.session_state.df_painel.copy(),
-                st.session_state.datas,
-                filtros
-            )
-            df_painel_filled = calcular_saldos(df_painel_filled)
-            st.session_state.df_painel_filled = df_painel_filled
-            st.session_state.atualizar = False
-            st.rerun()
-    
-    # Tab 1: Painel Completo
     with tab1:
-        if 'df_painel_filled' in st.session_state:
-            # Métricas principais
-            exibir_metricas_principais(st.session_state.df_painel_filled)
-            
-            st.divider()
-            
-            # Painel completo
-            st.subheader("📋 Painel de Fluxo de Caixa")
-            exibir_painel(st.session_state.df_painel_filled)
+        fig1 = criar_grafico_fluxo(resultados, meses_periodo)
+        st.plotly_chart(fig1, use_container_width=True)
     
-    # Tab 2: Análise Gráfica
     with tab2:
-        if 'df_painel_filled' in st.session_state:
-            exibir_graficos(st.session_state.df_painel_filled)
-            
-            # Tabela resumo
-            st.divider()
-            st.subheader("📊 Resumo Mensal")
-            
-            resumo_indices = ['SALDO INICIAL', 'RECEITAS TOTAL', 'SALDO FINAL', 'CAIXA EFETIVO']
-            resumo_df = pd.DataFrame()
-            for idx in resumo_indices:
-                if idx in st.session_state.df_painel_filled.index:
-                    resumo_df[idx] = st.session_state.df_painel_filled.loc[idx]
-            
-            # Formatar
-            for col in resumo_df.columns:
-                resumo_df[col] = resumo_df[col].apply(lambda x: f"R$ {x:,.2f}" if pd.notna(x) else "R$ 0,00")
-            
-            st.dataframe(resumo_df, use_container_width=True)
+        fig2 = criar_grafico_saldo(resultados, meses_periodo)
+        st.plotly_chart(fig2, use_container_width=True)
     
-    # Tab 3: Base de Dados
-    with tab3:
-        st.subheader("📊 Base de Dados Carregada")
+    st.markdown("---")
+    
+    # Tabela de resultados
+    st.header("📋 Detalhamento do Fluxo de Caixa")
+    
+    df_resultados = criar_dataframe_resultados(resultados, meses_periodo)
+    
+    # Formatação para exibição
+    df_exibicao = df_resultados.copy()
+    for col in df_exibicao.columns[1:]:
+        df_exibicao[col] = df_exibicao[col].apply(formatar_valor)
+    
+    st.dataframe(
+        df_exibicao,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Categoria": st.column_config.Column("Categoria", width=300)
+        }
+    )
+    
+    # Botões de exportação
+    col1, col2, col3 = st.columns([1, 1, 3])
+    
+    with col1:
+        csv = df_resultados.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Download CSV",
+            data=csv,
+            file_name=f"fluxo_caixa_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv"
+        )
+    
+    with col2:
+        excel_data = exportar_excel(df_resultados)
+        st.download_button(
+            label="📥 Download Excel",
+            data=excel_data,
+            file_name=f"fluxo_caixa_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    
+    # Análise detalhada por categoria
+    st.markdown("---")
+    st.header("🔍 Análise Detalhada por Categoria")
+    
+    categoria_selecionada = st.selectbox(
+        "Selecione uma categoria para análise detalhada",
+        options=[c for c in PAINEL_ESTRUTURA.keys() if c not in ['SALDO INICIAL', 'SALDO FINAL']]
+    )
+    
+    if categoria_selecionada:
+        # Filtrar apenas itens da categoria selecionada
+        codigos_categoria = [k for k, v in CATEGORIAS_DRE.items() if v == categoria_selecionada]
         
-        if 'df_base' in st.session_state:
-            df_base = st.session_state.df_base
+        df_detalhado = df_base[
+            (df_base['Empresa'].isin(empresas_selecionadas)) &
+            (df_base['Segmento'].astype(str).isin(codigos_categoria)) &
+            (pd.to_datetime(df_base['Mês']) >= data_inicio) &
+            (pd.to_datetime(df_base['Mês']) <= data_fim)
+        ].copy()
+        
+        if not df_detalhado.empty:
+            df_detalhado['Mês'] = pd.to_datetime(df_detalhado['Mês']).dt.to_period('M')
+            df_detalhado['Valor Formatado'] = df_detalhado['Vl.rateado'].apply(formatar_valor)
             
-            # Estatísticas rápidas
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Total de Registros", len(df_base))
-            with col2:
-                if 'Vl.rateado' in df_base.columns:
-                    # Garantir que a coluna é numérica
-                    valores = pd.to_numeric(df_base['Vl.rateado'], errors='coerce').fillna(0)
-                    total_valor = valores.sum()
-                    st.metric("Valor Total", f"R$ {total_valor:,.2f}")
-            with col3:
-                if 'Dt.pagto' in df_base.columns:
-                    datas = pd.to_datetime(df_base['Dt.pagto'], errors='coerce').dt.date
-                    datas = datas.dropna()
-                    if len(datas) > 0:
-                        periodo = f"{datas.min()} a {datas.max()}"
-                        st.metric("Período", periodo)
+            # Agrupar por mês e descrição
+            df_pivot = df_detalhado.pivot_table(
+                values='Vl.rateado',
+                index='Descrição',
+                columns='Mês',
+                aggfunc='sum',
+                fill_value=0
+            )
             
-            st.dataframe(df_base, use_container_width=True, height=600)
+            # Formatar valores
+            df_pivot_formatado = df_pivot.copy()
+            for col in df_pivot_formatado.columns:
+                df_pivot_formatado[col] = df_pivot_formatado[col].apply(formatar_valor)
+            
+            st.dataframe(
+                df_pivot_formatado,
+                use_container_width=True
+            )
+            
+            # Gráfico da categoria
+            fig_categoria = go.Figure()
+            
+            for descricao in df_pivot.index[:10]:  # Limitar a 10 itens
+                valores = df_pivot.loc[descricao]
+                fig_categoria.add_trace(go.Scatter(
+                    name=descricao[:30] + "..." if len(descricao) > 30 else descricao,
+                    x=[str(m) for m in df_pivot.columns],
+                    y=valores,
+                    mode='lines+markers'
+                ))
+            
+            fig_categoria.update_layout(
+                title=f'Evolução - {categoria_selecionada}',
+                xaxis_title='Mês',
+                yaxis_title='Valor (R$)',
+                hovermode='x unified',
+                height=400
+            )
+            
+            st.plotly_chart(fig_categoria, use_container_width=True)
+            
         else:
-            st.info("ℹ️ Nenhuma base carregada. Use o menu lateral para fazer upload.")
+            st.info(f"Nenhum dado encontrado para a categoria {categoria_selecionada} no período selecionado")
+    
+    # Rodapé
+    st.markdown("---")
+    st.caption(f"Última atualização: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
 
-if __name__ == "__main__":
-    main()
+else:
+    # Mensagem inicial
+    st.info("👈 Faça o upload do arquivo de base no menu lateral para começar")
+    
+    # Exemplo da estrutura esperada
+    with st.expander("📋 Estrutura esperada do arquivo"):
+        st.markdown("""
+        O arquivo Excel deve conter uma planilha chamada **Base** com as seguintes colunas:
+        
+        - **Empresa**: Nome da empresa
+        - **Segmento**: Código do segmento (mapeado para categorias)
+        - **Descrição**: Descrição da transação
+        - **Vl.rateado**: Valor rateado da transação
+        - **Valor**: Valor original
+        - **Dt.emissao**: Data de emissão
+        - **Mês**: Mês de referência
+        
+        ### Mapeamento de Categorias
+        Os códigos de segmento são automaticamente mapeados para as categorias do painel:
+        - **31101001, 31101004** → RECEITAS TOTAL
+        - **61301010, 61301011, 61301012, 61301013, 61301014** → IMPOSTOS SOBRE VENDAS
+        - **41101001 até 41213004** → DESEMBOLSOS FIXOS E VARIÁVEIS
+        - **61301069** → Transferência entre empresas
+        - **61301022, 61301072, 61301077, 61301019, 61301020, 61301037** → ENTRADAS/SAÍDAS FINANCEIRAS
+        - Demais códigos 6130... → OUTRAS ENTRADAS/SAÍDAS QUE NÃO AFETAM O DRE
+        """)
