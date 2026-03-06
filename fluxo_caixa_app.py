@@ -786,4 +786,64 @@ if not df_fat.empty or not df_pag.empty:
             
             # Tabela de projeção diária
             with st.expander("📋 Ver detalhamento diário"):
-                display_proj = projecao_diaria[['DATA
+                display_proj = projecao_diaria[['DATA_EFETIVA', 'TIPO', 'DESCRICAO', 'VALOR']].copy()
+                display_proj.columns = ['Data', 'Tipo', 'Descrição', 'Valor']
+                display_proj['Valor'] = display_proj['Valor'].apply(lambda x: f'R$ {x:,.2f}')
+                st.dataframe(display_proj, use_container_width=True)
+        else:
+            st.info("ℹ️ Nenhuma projeção diária disponível para o período.")
+    
+    st.markdown("---")
+    
+    # Gráfico de pizza de categorias (ocupando largura total)
+    st.header("🥧 Distribuição de Saídas por Categoria")
+    
+    if not resumo_categorias.empty:
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            # Top 8 categorias + outros
+            top_categorias = resumo_categorias.head(8).copy()
+            if len(resumo_categorias) > 8:
+                outros_valor = resumo_categorias.iloc[8:]['VALOR'].sum()
+                if outros_valor > 0:
+                    outros_row = pd.DataFrame({'CATEGORIA': ['OUTROS'], 'VALOR': [outros_valor]})
+                    top_categorias = pd.concat([top_categorias, outros_row], ignore_index=True)
+            
+            fig_pizza = px.pie(
+                top_categorias,
+                values='VALOR',
+                names='CATEGORIA',
+                title="Distribuição por Categoria",
+                hole=0.3
+            )
+            fig_pizza.update_traces(textposition='inside', textinfo='percent+label')
+            fig_pizza.update_layout(height=500)
+            
+            st.plotly_chart(fig_pizza, use_container_width=True)
+        
+        with col2:
+            # Tabela de categorias
+            st.subheader("Detalhamento por Categoria")
+            display_cat = resumo_categorias.copy()
+            display_cat['VALOR'] = display_cat['VALOR'].apply(lambda x: f'R$ {x:,.2f}')
+            display_cat['%'] = (resumo_categorias['VALOR'] / resumo_categorias['VALOR'].sum() * 100).apply(lambda x: f'{x:.1f}%')
+            st.dataframe(display_cat, use_container_width=True)
+    else:
+        st.info("ℹ️ Nenhum dado de categoria disponível.")
+    
+    st.markdown("---")
+    
+    # Rodapé com informações
+    st.markdown(f"""
+    **Período analisado:** {data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}  
+    **Empresa:** {empresa_selecionada}  
+    **Projeção baseada em:** Recebimentos (vencimento + 2 dias) | Pagamentos (vencimento)
+    """)
+
+else:
+    st.warning("⚠️ Nenhum dado disponível para análise.")
+
+# Rodapé
+st.markdown("---")
+st.markdown("Dashboard de Fluxo de Caixa - PRO CLEAN | Atualizado em tempo real")
