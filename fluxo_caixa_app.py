@@ -1,381 +1,481 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
-from io import BytesIO
+from datetime import datetime, timedelta
+import io
 
 # Configuração da página
 st.set_page_config(
-    page_title="Fluxo de Caixa - Pro Clean",
+    page_title="Fluxo de Caixa - PRO CLEAN",
     page_icon="💰",
     layout="wide"
 )
 
-# Título principal
-st.title("💰 Sistema de Fluxo de Caixa - Pro Clean")
-st.markdown("---")
-
 # Funções de carregamento e processamento
 @st.cache_data
-def load_faturamento(file):
-    """Carrega e processa o arquivo de faturamento histórico"""
-    df = pd.read_excel(file, sheet_name='Faturamento')
+def load_data(uploaded_file):
+    """Carrega dados do arquivo Excel uploadado"""
+    if uploaded_file is not None:
+        xls = pd.ExcelFile(uploaded_file)
+        
+        # Carrega as duas abas
+        df_faturamento = pd.read_excel(xls, 'Faturamento')
+        df_pagamentos = pd.read_excel(xls, 'Pagamentos')
+        
+        return df_faturamento, df_pagamentos
+    return None, None
+
+def process_faturamento(df):
+    """Processa a base de faturamento"""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    
+    df = df.copy()
+    
+    # Padronizar nomes das colunas
+    df.columns = [col.strip().upper() for col in df.columns]
     
     # Converter datas
-    df['DTEMISSAO'] = pd.to_datetime(df['DTEMISSAO'])
-    df['DTVENCIMENTO'] = pd.to_datetime(df['DTVENCIMENTO'])
+    date_columns = ['DTEMISSAO', 'DTVENCIMENTO']
+    for col in date_columns:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors='coerce')
     
-    # Extrair mês/ano para agrupamentos
-    df['MES_ANO'] = df['DTVENCIMENTO'].dt.strftime('%Y-%m')
-    df['MES'] = df['DTVENCIMENTO'].dt.month
-    df['ANO'] = df['DTVENCIMENTO'].dt.year
-    df['DIA'] = df['DTVENCIMENTO'].dt.day
+    # Extrair mês/ano para facilitar análises
+    if 'DTVENCIMENTO' in df.columns:
+        df['MES_VENCIMENTO'] = df['DTVENCIMENTO'].dt.to_period('M')
+        df['ANO_MES'] = df['DTVENCIMENTO'].dt.strftime('%Y-%m')
     
     return df
 
-@st.cache_data
-def load_layout(file):
-    """Carrega o arquivo de layout com as contas"""
-    df = pd.read_excel(file, sheet_name='Painel 1')
-    # Remover linhas totalmente vazias
-    df = df.dropna(how='all')
-    return df
-
-def processar_fluxo_real(df_faturamento, df_layout):
-    """Processa o fluxo real baseado no layout Painel 1"""
-    # Por enquanto, como não temos os valores reais no layout,
-    # vamos usar uma estrutura vazia baseada nas contas
-    fluxo_real = df_layout.copy()
+def process_pagamentos(df):
+    """Processa a base de pagamentos"""
+    if df is None or df.empty:
+        return pd.DataFrame()
     
-    # Preencher com zeros para os meses
-    meses = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho',
-             'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro']
+    df = df.copy()
     
-    for mes in meses:
-        if mes not in fluxo_real.columns:
-            fluxo_real[mes] = 0.0
+    # Padronizar nomes das colunas
+    df.columns = [col.strip().upper() for col in df.columns]
     
-    # Aqui você pode implementar a lógica para distribuir os valores
-    # do faturamento nas respectivas contas do layout
+    # Mapear colunas (o arquivo pode ter nomes diferentes)
+    col_map = {
+        'DESCRIÇÃO': 'DESCRICAO',
+        'DT.VENC.': 'DTVENC',
+        'DT.PAGTO': 'DTPAGTO',
+        'MÊS': 'MES'
+    }
     
-    return fluxo_real
-
-def calcular_fluxo_previsto(df_faturamento):
-    """Calcula o fluxo previsto baseado no histórico"""
-    # Agrupar recebimentos por data de vencimento
-    fluxo_diario = df_faturamento.groupby('DTVENCIMENTO').agg({
-        'VALORLIQUIDO': 'sum'
-    }).reset_index()
+    df.rename(columns=col_map, inplace=True)
     
-    fluxo_diario.columns = ['Data', 'Valor_Previsto']
-    fluxo_diario = fluxo_diario.sort_values('Data')
+    # Converter datas
+    date_columns = ['DTVENC', 'DTPAGTO', 'MES']
+    for col in date_columns:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors='coerce')
     
-    # Calcular médias para projeção
-    media_mensal = df_faturamento.groupby('MES')['VALORLIQUIDO'].mean()
-    
-    return fluxo_diario, media_mensal
-
-def criar_estrutura_fluxo_diario():
-    """Cria a estrutura base para fluxo diário (similar ao Painel 2)"""
-    # Gerar datas de Jan a Mar 2026 (dias úteis)
-    datas = []
-    data_inicio = datetime(2026, 1, 1)
-    data_fim = datetime(2026, 3, 31)
-    
-    data_atual = data_inicio
-    while data_atual <= data_fim:
-        # Pular fins de semana (opcional)
-        if data_atual.weekday() < 5:  # Segunda a sexta
-            datas.append(data_atual)
-        data_atual += timedelta(days=1)
-    
-    df_fluxo = pd.DataFrame({
-        'Data': datas,
-        'Entrada': 0.0,
-        'Saida': 0.0,
-        'Saldo': 0.0
+    # Criar categorias baseadas nos códigos de segmento
+    df['CATEGORIA'] = df['SEGMENTO'].astype(str).str[:4].map({
+        '4110': 'SALARIOS E ENCARGOS',
+        '4111': 'BENEFÍCIOS',
+        '4112': 'ASPECTOS TRABALHISTAS',
+        '4113': 'CUSTOS DE ADMISSÃO',
+        '4114': 'MÃO DE OBRA TERCEIROS',
+        '4120': 'ENERGIAS',
+        '4121': 'MANUTENÇÃO',
+        '4122': 'MATERIAL DE LIMPEZA',
+        '4123': 'ALUGUÉIS',
+        '4124': 'DESPESAS COM VEÍCULOS',
+        '4125': 'IMPOSTOS, TAXAS E SEGUROS',
+        '4126': 'COMUNICAÇÕES',
+        '4127': 'VIAGENS E LOCOMOÇÃO',
+        '4128': 'ADMINISTRAÇÃO',
+        '4129': 'SERVIÇOS CONTRATADOS',
+        '4130': 'COMISSÕES',
+        '4131': 'DESPESAS COM MARKETING',
+        '4132': 'DESPESAS COM CLIENTES',
+        '6130': 'CAIXA'
     })
     
-    return df_fluxo
+    # Classificar transferências especificamente
+    mask_transf = df['DESCRICAO'].str.contains('TRANSFERENCIA|CX - TRANSFERÊNCIA', na=False, case=False)
+    df.loc[mask_transf, 'CATEGORIA'] = 'CX - TRANSFERÊNCIA'
+    
+    return df
 
-# Sidebar - Upload de arquivos
+def create_real_cash_flow(df_pagamentos, df_faturamento, empresas=None, clientes=None, data_inicio=None, data_fim=None):
+    """Cria o fluxo de caixa real agregado por categoria"""
+    if df_pagamentos is None or df_pagamentos.empty:
+        return pd.DataFrame()
+    
+    df = df_pagamentos.copy()
+    
+    # Aplicar filtros
+    if empresas and len(empresas) > 0:
+        df = df[df['EMPRESA'].isin(empresas)]
+    
+    # Filtrar por data de pagamento
+    if 'DTPAGTO' in df.columns and data_inicio and data_fim:
+        df = df[(df['DTPAGTO'] >= pd.Timestamp(data_inicio)) & 
+                (df['DTPAGTO'] <= pd.Timestamp(data_fim))]
+    
+    # Extrair mês/ano
+    df['MES_ANO'] = df['DTPAGTO'].dt.to_period('M').astype(str)
+    
+    # Agrupar por categoria e mês
+    pivot = pd.pivot_table(
+        df,
+        values='VALOR',
+        index='CATEGORIA',
+        columns='MES_ANO',
+        aggfunc='sum',
+        fill_value=0
+    )
+    
+    # Calcular totais
+    pivot['Total'] = pivot.sum(axis=1)
+    pivot = pivot.sort_values('Total', ascending=False)
+    
+    return pivot
+
+def create_projected_cash_flow(df_faturamento, df_pagamentos, projection_days=30):
+    """Cria projeção de fluxo de caixa baseada em recebimentos e pagamentos futuros"""
+    if df_faturamento is None or df_pagamentos is None:
+        return pd.DataFrame()
+    
+    hoje = datetime.now().date()
+    data_limite = hoje + timedelta(days=projection_days)
+    
+    # Projeção de recebimentos
+    recebimentos = df_faturamento.copy()
+    if 'DTVENCIMENTO' in recebimentos.columns:
+        recebimentos = recebimentos[recebimentos['DTVENCIMENTO'].dt.date <= data_limite]
+        recebimentos = recebimentos[recebimentos['DTVENCIMENTO'].dt.date >= hoje]
+        
+        # Considerar 2 dias para compensação
+        recebimentos['DATA_CAIXA'] = recebimentos['DTVENCIMENTO'] + pd.Timedelta(days=2)
+        recebimentos['VALOR'] = recebimentos.get('VALORLIQUIDO', recebimentos.get('VALORBRUTO', 0))
+        recebimentos['TIPO'] = 'RECEBIMENTO'
+        recebimentos['DESCRICAO'] = recebimentos['CLIENTE'].astype(str) + ' - Recebimento'
+    
+    # Projeção de pagamentos
+    pagamentos = df_pagamentos.copy()
+    if 'DTVENC' in pagamentos.columns:
+        pagamentos = pagamentos[pagamentos['DTVENC'].dt.date <= data_limite]
+        pagamentos = pagamentos[pagamentos['DTVENC'].dt.date >= hoje]
+        pagamentos['DATA_CAIXA'] = pagamentos['DTVENC']
+        pagamentos['VALOR'] = pagamentos['VALOR']
+        pagamentos['TIPO'] = 'PAGAMENTO'
+        pagamentos['DESCRICAO'] = pagamentos['DESCRICAO']
+    
+    # Combinar projeções
+    projecoes = pd.concat([
+        recebimentos[['DATA_CAIXA', 'VALOR', 'TIPO', 'DESCRICAO']] if not recebimentos.empty else pd.DataFrame(),
+        pagamentos[['DATA_CAIXA', 'VALOR', 'TIPO', 'DESCRICAO']] if not pagamentos.empty else pd.DataFrame()
+    ], ignore_index=True)
+    
+    if not projecoes.empty:
+        projecoes = projecoes.sort_values('DATA_CAIXA')
+        projecoes['SALDO_ACUMULADO'] = projecoes['VALOR'].cumsum()
+    
+    return projecoes
+
+def create_daily_projection(df_faturamento, df_pagamentos, projection_days=30):
+    """Cria projeção diária detalhada"""
+    projecoes = create_projected_cash_flow(df_faturamento, df_pagamentos, projection_days)
+    
+    if projecoes.empty:
+        return pd.DataFrame()
+    
+    # Agrupar por dia
+    projecoes['DIA'] = projecoes['DATA_CAIXA'].dt.date
+    daily = projecoes.groupby('DIA').agg({
+        'VALOR': 'sum',
+        'TIPO': lambda x: ', '.join(x.unique())
+    }).reset_index()
+    
+    daily.columns = ['Data', 'Valor Projetado', 'Tipos']
+    daily = daily.sort_values('Data')
+    daily['Saldo Acumulado'] = daily['Valor Projetado'].cumsum()
+    
+    return daily
+
+# Título principal
+st.title("💰 Dashboard de Fluxo de Caixa - PRO CLEAN")
+st.markdown("---")
+
+# Sidebar para upload e filtros
 with st.sidebar:
-    st.header("📁 Upload de Arquivos")
-    
-    faturamento_file = st.file_uploader(
-        "Faturamento Histórico (Faturamento Histórico.xlsx)",
-        type=['xlsx']
+    st.header("📁 Upload da Base")
+    uploaded_file = st.file_uploader(
+        "Escolha o arquivo Base.xlsx",
+        type=['xlsx'],
+        help="Faça upload do arquivo Excel com as abas Faturamento e Pagamentos"
     )
     
-    layout_file = st.file_uploader(
-        "Layout (layout.xlsx)",
-        type=['xlsx']
-    )
+    if uploaded_file:
+        st.success("Arquivo carregado com sucesso!")
     
     st.markdown("---")
     st.header("🔍 Filtros")
     
-    if faturamento_file is not None:
-        df_faturamento = load_faturamento(faturamento_file)
+    # Carregar dados se arquivo foi uploadado
+    if uploaded_file:
+        df_fat, df_pag = load_data(uploaded_file)
+        df_fat = process_faturamento(df_fat)
+        df_pag = process_pagamentos(df_pag)
         
         # Filtros
-        empresas = ['Todas'] + sorted(df_faturamento['EMPRESA'].unique().tolist())
-        empresa_selecionada = st.selectbox("Empresa", empresas)
+        empresas = st.multiselect(
+            "Empresa",
+            options=df_pag['EMPRESA'].unique() if not df_pag.empty else []
+        )
         
-        if empresa_selecionada != 'Todas':
-            df_filtrado = df_faturamento[df_faturamento['EMPRESA'] == empresa_selecionada]
-        else:
-            df_filtrado = df_faturamento
+        # Data range
+        col1, col2 = st.columns(2)
+        with col1:
+            data_inicio = st.date_input(
+                "Data Início",
+                value=datetime(2025, 1, 1)
+            )
+        with col2:
+            data_fim = st.date_input(
+                "Data Fim",
+                value=datetime.now()
+            )
         
-        clientes = ['Todos'] + sorted(df_filtrado['CLIENTE'].unique().tolist())
-        cliente_selecionado = st.selectbox("Cliente", clientes)
-        
-        # Filtro de data
-        st.markdown("**Período**")
-        data_min = df_faturamento['DTVENCIMENTO'].min().date()
-        data_max = df_faturamento['DTVENCIMENTO'].max().date()
-        
-        data_inicio = st.date_input("Data Inicial", data_min)
-        data_fim = st.date_input("Data Final", data_max)
-
-# Abas principais
-tab1, tab2, tab3 = st.tabs(["📊 Fluxo Real", "📈 Fluxo Previsto", "📋 Resumo Geral"])
-
-with tab1:
-    st.header("Fluxo de Caixa Real")
-    
-    if layout_file is not None:
-        df_layout = load_layout(layout_file)
-        fluxo_real = processar_fluxo_real(df_faturamento if faturamento_file else pd.DataFrame(), df_layout)
-        
-        # Exibir tabela de fluxo real
-        st.subheader("Contas por Mês")
-        st.dataframe(fluxo_real, use_container_width=True)
-        
-        # Botão para download
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            fluxo_real.to_excel(writer, sheet_name='Fluxo_Real', index=False)
-        
-        st.download_button(
-            label="📥 Download Fluxo Real (Excel)",
-            data=output.getvalue(),
-            file_name="fluxo_real.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        proj_dias = st.slider(
+            "Dias de Projeção",
+            min_value=7,
+            max_value=90,
+            value=30,
+            step=1
         )
     else:
-        st.info("👈 Faça upload do arquivo 'layout.xlsx' para visualizar o Fluxo Real")
+        st.info("👆 Faça upload do arquivo Base.xlsx para começar")
+        empresas = []
+        data_inicio = datetime(2025, 1, 1)
+        data_fim = datetime.now()
+        proj_dias = 30
+        df_fat, df_pag = pd.DataFrame(), pd.DataFrame()
 
-with tab2:
-    st.header("Fluxo de Caixa Previsto")
+# Main content
+if uploaded_file and not df_pag.empty:
+    # Processar dados com filtros
+    real_flow = create_real_cash_flow(
+        df_pag, df_fat, 
+        empresas=empresas,
+        data_inicio=data_inicio,
+        data_fim=data_fim
+    )
     
-    if faturamento_file is not None:
-        # Processar dados para previsão
-        fluxo_diario, media_mensal = calcular_fluxo_previsto(df_faturamento)
+    projecoes = create_projected_cash_flow(df_fat, df_pag, proj_dias)
+    daily_proj = create_daily_projection(df_fat, df_pag, proj_dias)
+    
+    # Tabs para diferentes visualizações
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📊 Fluxo Real", 
+        "📈 Projeções", 
+        "📅 Visão Diária",
+        "📋 Detalhamento"
+    ])
+    
+    with tab1:
+        st.header("Fluxo de Caixa Real por Categoria")
         
-        # Aplicar filtros
-        if empresa_selecionada != 'Todas':
-            df_filtrado = df_faturamento[df_faturamento['EMPRESA'] == empresa_selecionada]
-        else:
-            df_filtrado = df_faturamento
+        if not real_flow.empty:
+            # Métricas principais
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                total_saidas = real_flow['Total'].sum()
+                st.metric("Total de Saídas", f"R$ {total_saidas:,.2f}")
+            with col2:
+                num_categorias = len(real_flow)
+                st.metric("Categorias", f"{num_categorias}")
+            with col3:
+                media_mensal = real_flow.iloc[:, :-1].mean().mean()
+                st.metric("Média Mensal", f"R$ {media_mensal:,.2f}")
+            with col4:
+                maior_categoria = real_flow.iloc[0].name if len(real_flow) > 0 else "N/A"
+                st.metric("Maior Categoria", maior_categoria)
             
-        if cliente_selecionado != 'Todos':
-            df_filtrado = df_filtrado[df_filtrado['CLIENTE'] == cliente_selecionado]
-        
-        df_filtrado = df_filtrado[
-            (df_filtrado['DTVENCIMENTO'].dt.date >= data_inicio) &
-            (df_filtrado['DTVENCIMENTO'].dt.date <= data_fim)
-        ]
-        
-        # Métricas resumidas
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric(
-                "Total Recebimentos",
-                f"R$ {df_filtrado['VALORLIQUIDO'].sum():,.2f}"
+            # Gráfico de barras
+            st.subheader("Distribuição por Categoria")
+            fig = px.bar(
+                real_flow.reset_index(),
+                x='CATEGORIA',
+                y='Total',
+                title="Total de Saídas por Categoria",
+                labels={'Total': 'Valor (R$)', 'CATEGORIA': 'Categoria'}
             )
-        
-        with col2:
-            st.metric(
-                "Média por Dia",
-                f"R$ {df_filtrado['VALORLIQUIDO'].mean():,.2f}"
+            fig.update_layout(xaxis_tickangle=-45)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Heatmap mensal
+            st.subheader("Heatmap Mensal de Saídas")
+            heatmap_data = real_flow.drop('Total', axis=1).T
+            fig = px.imshow(
+                heatmap_data,
+                labels=dict(x="Categoria", y="Mês", color="Valor (R$)"),
+                aspect="auto",
+                color_continuous_scale="Reds"
             )
-        
-        with col3:
-            st.metric(
-                "Total Notas",
-                f"{len(df_filtrado)}"
-            )
-        
-        with col4:
-            st.metric(
-                "Clientes Ativos",
-                f"{df_filtrado['CLIENTE'].nunique()}"
-            )
-        
-        st.markdown("---")
-        
-        # Gráfico de linha - Evolução por data
-        st.subheader("📅 Evolução Diária dos Recebimentos")
-        
-        df_diario = df_filtrado.groupby('DTVENCIMENTO')['VALORLIQUIDO'].sum().reset_index()
-        df_diario.columns = ['Data', 'Valor']
-        
-        fig_line = px.line(
-            df_diario,
-            x='Data',
-            y='Valor',
-            title='Recebimentos por Data de Vencimento',
-            markers=True
-        )
-        fig_line.update_layout(
-            xaxis_title="Data",
-            yaxis_title="Valor (R$)",
-            hovermode='x'
-        )
-        st.plotly_chart(fig_line, use_container_width=True)
-        
-        # Gráfico de barras - Por mês
-        st.subheader("📊 Recebimentos por Mês")
-        
-        df_mensal = df_filtrado.groupby('MES_ANO')['VALORLIQUIDO'].sum().reset_index()
-        
-        fig_bar = px.bar(
-            df_mensal,
-            x='MES_ANO',
-            y='VALORLIQUIDO',
-            title='Total Recebido por Mês',
-            text_auto='.2s'
-        )
-        fig_bar.update_layout(
-            xaxis_title="Mês/Ano",
-            yaxis_title="Valor (R$)"
-        )
-        st.plotly_chart(fig_bar, use_container_width=True)
-        
-        # Tabela de projeção diária
-        st.subheader("📋 Projeção Diária de Recebimentos")
-        
-        # Criar estrutura de fluxo diário
-        df_projecao = criar_estrutura_fluxo_diario()
-        
-        # Preencher com valores históricos (exemplo)
-        # Na prática, você usaria modelos de previsão
-        ultima_data = df_filtrado['DTVENCIMENTO'].max()
-        valor_medio_dia = df_filtrado['VALORLIQUIDO'].mean()
-        
-        # Exemplo: projetar próximos 3 meses baseado na média
-        for idx, row in df_projecao.iterrows():
-            if row['Data'] > ultima_data:
-                df_projecao.loc[idx, 'Entrada'] = valor_medio_dia * np.random.uniform(0.8, 1.2)
-        
-        # Calcular saldo acumulado
-        df_projecao['Saldo'] = df_projecao['Entrada'].cumsum() - df_projecao['Saida'].cumsum()
-        
-        st.dataframe(
-            df_projecao.style.format({
-                'Entrada': 'R$ {:,.2f}',
-                'Saida': 'R$ {:,.2f}',
-                'Saldo': 'R$ {:,.2f}'
-            }),
-            use_container_width=True,
-            height=400
-        )
-        
-        # Botão para download da projeção
-        output_proj = BytesIO()
-        with pd.ExcelWriter(output_proj, engine='openpyxl') as writer:
-            df_projecao.to_excel(writer, sheet_name='Projecao', index=False)
-        
-        st.download_button(
-            label="📥 Download Projeção Diária (Excel)",
-            data=output_proj.getvalue(),
-            file_name="projecao_fluxo_caixa.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-        
-    else:
-        st.info("👈 Faça upload do arquivo 'Faturamento Histórico.xlsx' para visualizar o Fluxo Previsto")
-
-with tab3:
-    st.header("Resumo Geral")
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Tabela detalhada
+            st.subheader("Tabela Detalhada")
+            
+            # Formatar valores
+            display_df = real_flow.copy()
+            for col in display_df.columns:
+                display_df[col] = display_df[col].apply(lambda x: f"R$ {x:,.2f}")
+            
+            st.dataframe(display_df, use_container_width=True)
+        else:
+            st.info("Nenhum dado encontrado para os filtros selecionados.")
     
-    if faturamento_file is not None:
-        # KPIs principais
-        st.subheader("📈 Indicadores Principais")
+    with tab2:
+        st.header("Fluxo de Caixa Projetado")
         
-        col1, col2, col3 = st.columns(3)
+        if not projecoes.empty:
+            # Métricas de projeção
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                total_recebimentos = projecoes[projecoes['TIPO'] == 'RECEBIMENTO']['VALOR'].sum()
+                st.metric("Total Recebimentos Projetados", f"R$ {total_recebimentos:,.2f}")
+            with col2:
+                total_pagamentos = projecoes[projecoes['TIPO'] == 'PAGAMENTO']['VALOR'].sum()
+                st.metric("Total Pagamentos Projetados", f"R$ {total_pagamentos:,.2f}")
+            with col3:
+                saldo_projetado = projecoes['VALOR'].sum()
+                st.metric("Saldo Projetado", f"R$ {saldo_projetado:,.2f}")
+            
+            # Gráfico de linha do saldo acumulado
+            st.subheader("Evolução do Saldo Projetado")
+            fig = go.Figure()
+            
+            fig.add_trace(go.Scatter(
+                x=projecoes['DATA_CAIXA'],
+                y=projecoes['SALDO_ACUMULADO'],
+                mode='lines+markers',
+                name='Saldo Acumulado',
+                line=dict(color='green', width=2)
+            ))
+            
+            fig.update_layout(
+                xaxis_title="Data",
+                yaxis_title="Saldo (R$)",
+                hovermode='x'
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Gráfico de barras por tipo
+            fig = px.bar(
+                projecoes,
+                x='DATA_CAIXA',
+                y='VALOR',
+                color='TIPO',
+                title="Projeção de Recebimentos e Pagamentos",
+                barmode='group',
+                color_discrete_map={'RECEBIMENTO': 'green', 'PAGAMENTO': 'red'}
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Nenhuma projeção disponível para o período selecionado.")
+    
+    with tab3:
+        st.header("Visão Diária das Projeções")
         
+        if not daily_proj.empty:
+            # Gráfico de barras diário
+            fig = px.bar(
+                daily_proj,
+                x='Data',
+                y='Valor Projetado',
+                title="Projeção Diária de Fluxo de Caixa",
+                labels={'Valor Projetado': 'Valor (R$)'}
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Tabela diária
+            st.subheader("Detalhamento Diário")
+            
+            # Formatar valores
+            display_daily = daily_proj.copy()
+            display_daily['Valor Projetado'] = display_daily['Valor Projetado'].apply(lambda x: f"R$ {x:,.2f}")
+            display_daily['Saldo Acumulado'] = display_daily['Saldo Acumulado'].apply(lambda x: f"R$ {x:,.2f}")
+            
+            st.dataframe(display_daily, use_container_width=True)
+        else:
+            st.info("Nenhuma projeção diária disponível.")
+    
+    with tab4:
+        st.header("Detalhamento de Transações")
+        
+        # Mostrar recebimentos
+        st.subheader("📥 Recebimentos Futuros")
+        recebimentos = projecoes[projecoes['TIPO'] == 'RECEBIMENTO'] if not projecoes.empty else pd.DataFrame()
+        if not recebimentos.empty:
+            display_rec = recebimentos[['DATA_CAIXA', 'DESCRICAO', 'VALOR']].copy()
+            display_rec['VALOR'] = display_rec['VALOR'].apply(lambda x: f"R$ {x:,.2f}")
+            display_rec.columns = ['Data Prevista', 'Cliente', 'Valor']
+            st.dataframe(display_rec, use_container_width=True)
+        else:
+            st.info("Nenhum recebimento futuro encontrado.")
+        
+        # Mostrar pagamentos
+        st.subheader("📤 Pagamentos Futuros")
+        pagamentos = projecoes[projecoes['TIPO'] == 'PAGAMENTO'] if not projecoes.empty else pd.DataFrame()
+        if not pagamentos.empty:
+            display_pag = pagamentos[['DATA_CAIXA', 'DESCRICAO', 'VALOR']].copy()
+            display_pag['VALOR'] = display_pag['VALOR'].apply(lambda x: f"R$ {x:,.2f}")
+            display_pag.columns = ['Data Prevista', 'Descrição', 'Valor']
+            st.dataframe(display_pag, use_container_width=True)
+        else:
+            st.info("Nenhum pagamento futuro encontrado.")
+        
+        # Estatísticas rápidas
+        st.subheader("📊 Estatísticas Rápidas")
+        col1, col2 = st.columns(2)
         with col1:
-            total_geral = df_faturamento['VALORLIQUIDO'].sum()
-            st.metric("Faturamento Total (Histórico)", f"R$ {total_geral:,.2f}")
+            st.markdown("**Maiores Recebimentos**")
+            if not recebimentos.empty:
+                top_rec = recebimentos.nlargest(5, 'VALOR')[['DESCRICAO', 'VALOR']]
+                top_rec['VALOR'] = top_rec['VALOR'].apply(lambda x: f"R$ {x:,.2f}")
+                st.dataframe(top_rec, use_container_width=True)
         
         with col2:
-            media_geral = df_faturamento['VALORLIQUIDO'].mean()
-            st.metric("Ticket Médio", f"R$ {media_geral:,.2f}")
-        
-        with col3:
-            num_clientes = df_faturamento['CLIENTE'].nunique()
-            st.metric("Total de Clientes", num_clientes)
-        
-        st.markdown("---")
-        
-        # Top 10 clientes
-        st.subheader("🏆 Top 10 Clientes por Faturamento")
-        
-        top_clientes = df_faturamento.groupby('CLIENTE')['VALORLIQUIDO'].sum().nlargest(10).reset_index()
-        
-        fig_top = px.bar(
-            top_clientes,
-            x='VALORLIQUIDO',
-            y='CLIENTE',
-            orientation='h',
-            title='Top 10 Clientes - Faturamento Total',
-            text_auto='.2s'
-        )
-        fig_top.update_layout(
-            xaxis_title="Valor (R$)",
-            yaxis_title="Cliente"
-        )
-        st.plotly_chart(fig_top, use_container_width=True)
-        
-        # Tabela detalhada
-        st.subheader("📋 Detalhamento por Cliente")
-        
-        resumo_clientes = df_faturamento.groupby(['CLIENTE', 'COD']).agg({
-            'VALORLIQUIDO': ['sum', 'mean', 'count'],
-            'DTVENCIMENTO': ['min', 'max']
-        }).round(2)
-        
-        resumo_clientes.columns = ['Total', 'Média', 'Qtd Notas', 'Primeira Data', 'Última Data']
-        resumo_clientes = resumo_clientes.reset_index()
-        
-        st.dataframe(
-            resumo_clientes.style.format({
-                'Total': 'R$ {:,.2f}',
-                'Média': 'R$ {:,.2f}'
-            }),
-            use_container_width=True
-        )
-        
-        # Botão para download do resumo
-        output_resumo = BytesIO()
-        with pd.ExcelWriter(output_resumo, engine='openpyxl') as writer:
-            resumo_clientes.to_excel(writer, sheet_name='Resumo_Clientes', index=False)
-            df_faturamento.to_excel(writer, sheet_name='Dados_Completos', index=False)
-        
-        st.download_button(
-            label="📥 Download Resumo Completo (Excel)",
-            data=output_resumo.getvalue(),
-            file_name="resumo_faturamento.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-    else:
-        st.info("👈 Faça upload do arquivo de faturamento para visualizar o resumo")
+            st.markdown("**Maiores Pagamentos**")
+            if not pagamentos.empty:
+                top_pag = pagamentos.nlargest(5, 'VALOR')[['DESCRICAO', 'VALOR']]
+                top_pag['VALOR'] = top_pag['VALOR'].apply(lambda x: f"R$ {x:,.2f}")
+                st.dataframe(top_pag, use_container_width=True)
+
+else:
+    # Mensagem inicial quando não há dados
+    st.info("👈 Faça upload do arquivo Base.xlsx no menu lateral para visualizar o dashboard")
+    
+    # Exemplo do layout
+    st.markdown("""
+    ### 📊 O que este dashboard oferece:
+    
+    - **Fluxo Real**: Análise detalhada de saídas por categoria e mês
+    - **Projeções**: Fluxo de caixa projetado baseado em recebimentos e pagamentos futuros
+    - **Visão Diária**: Detalhamento diário das projeções
+    - **Filtros**: Filtre por empresa, período e visualize projeções personalizadas
+    - **Gráficos Interativos**: Visualizações dinâmicas para melhor análise
+    
+    ### 📁 Estrutura esperada do arquivo:
+    
+    O arquivo deve conter duas abas:
+    - **Faturamento**: Com colunas EMPRESA, COD, CLIENTE, CNPJ, DTEMISSAO, DTVENCIMENTO, VALORBRUTO, VALORLIQUIDO
+    - **Pagamentos**: Com colunas Empresa, Segmento, Descrição, Dt.venc., Valor, Dt.pagto, Mês
+    
+    Após o upload, todos os dados serão processados automaticamente!
+    """)
 
 # Rodapé
 st.markdown("---")
-st.markdown("Desenvolvido para gestão de fluxo de caixa da Pro Clean | Atualizado em: 06/03/2026")
+st.markdown("Desenvolvido para análise de Fluxo de Caixa - PRO CLEAN")
