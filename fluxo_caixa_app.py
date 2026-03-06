@@ -1,267 +1,667 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from io import BytesIO
-from datetime import datetime
+from datetime import datetime, timedelta
 import plotly.express as px
+import plotly.graph_objects as go
+import io
 
-# --- Configuração da Página ---
-st.set_page_config(layout="wide", page_title="Fluxo de Caixa Real")
-st.title("💰 Dashboard de Fluxo de Caixa Real")
+# Set page configuration
+st.set_page_config(
+    page_title="Fluxo de Caixa Real - Dashboard",
+    page_icon="💰",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# --- Funções de Processamento ---
-
-@st.cache_data
-def carregar_dados(uploaded_file):
-    """Carrega as abas 'Painel' e 'Base' de um arquivo Excel."""
-    if uploaded_file is not None:
-        try:
-            df_painel = pd.read_excel(uploaded_file, sheet_name='Painel', header=None)
-            df_base = pd.read_excel(uploaded_file, sheet_name='Base')
-            return df_painel, df_base
-        except Exception as e:
-            st.error(f"Erro ao ler o arquivo: {e}. Certifique-se de que as abas 'Painel' e 'Base' existem.")
-            return None, None
-    return None, None
-
-def processar_painel(df_painel):
-    """Extrai a estrutura de contas e os saldos iniciais do painel."""
-    # Encontrar a linha de cabeçalho (onde começam as datas)
-    header_row_idx = None
-    for idx, row in df_painel.iterrows():
-        if pd.notna(row[1]) and '2025-01-01' in str(row.values):
-            header_row_idx = idx
-            break
-
-    if header_row_idx is None:
-        st.error("Não foi possível encontrar a linha de cabeçalho com as datas no painel.")
-        return None, None, None
-
-    # Definir o cabeçalho
-    df_painel.columns = df_painel.iloc[header_row_idx]
-    df_painel = df_painel[header_row_idx+1:].reset_index(drop=True)
-    df_painel = df_painel.dropna(how='all').reset_index(drop=True)
-
-    # Extrair Saldo Inicial (assumindo que a primeira coluna é a descrição)
-    saldo_inicial_row = df_painel[df_painel.iloc[:, 0] == 'SALDO INICIAL']
-    if not saldo_inicial_row.empty:
-        # O saldo inicial está na coluna de '2025-01-01' (índice 2)
-        saldo_inicial_val = pd.to_numeric(saldo_inicial_row.iloc[0, 2], errors='coerce')
-        if pd.isna(saldo_inicial_val):
-            saldo_inicial_val = 0.0
-    else:
-        saldo_inicial_val = 0.0
-
-    return df_painel, saldo_inicial_val, header_row_idx
-
-def processar_base(df_base):
-    """Limpa e prepara a base de dados de lançamentos."""
-    df_base.columns = [str(col).strip().upper() for col in df_base.columns]
-
-    col_map = {
-        'DT.PAGTO.': 'Dt.pagto',
-        'DT.PAGTO': 'Dt.pagto',
-        'VL.RATEADO': 'Vl.rateado',
-        'FANTASIA': 'Fantasia',
-        'SEGMENTO': 'Segmento'
+# CSS personalizado
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        color: #1E3A8A;
+        font-weight: bold;
+        margin-bottom: 1rem;
     }
-    df_base.rename(columns=col_map, inplace=True)
+    .metric-card {
+        background-color: #f0f2f6;
+        border-radius: 10px;
+        padding: 20px;
+        text-align: center;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    .positive {
+        color: #10b981;
+        font-weight: bold;
+    }
+    .negative {
+        color: #ef4444;
+        font-weight: bold;
+    }
+    .stDataFrame {
+        font-size: 0.8rem;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-    if 'Dt.pagto' not in df_base.columns or 'Vl.rateado' not in df_base.columns:
-        st.error("A base de dados não contém as colunas 'Dt.pagto' ou 'Vl.rateado'.")
+# ============================================================================
+# MODELO DO PAINEL (estrutura fixa baseada no arquivo anexo)
+# ============================================================================
+def criar_modelo_painel():
+    """
+    Cria a estrutura do painel de fluxo de caixa com base no modelo do arquivo anexo.
+    Esta função define a estrutura fixa que será preenchida com os dados da base.
+    """
+    
+    # Datas para o painel (12 meses + 1 futuro)
+    datas = []
+    for i in range(1, 13):
+        datas.append(datetime(2025, i, 1))
+    datas.append(datetime(2026, 1, 1))  # Janeiro/2026
+    
+    # Estrutura do painel (linhas)
+    estrutura_painel = [
+        "SALDO INICIAL",
+        "",
+        "RECEITAS TOTAL",
+        "FATURAMENTO",
+        "FATURAMENTO - devedores",
+        "INSS RETIDO EM NOTA",
+        "DEPOSITO A IDENTIFICAR",
+        "",
+        "IMPOSTOS SOBRE VENDAS",
+        ". ISS",
+        ". PIS",
+        ". COFINS",
+        ". DEPÓSITO JUDICIAL",
+        "",
+        "DESEMBOLSOS FIXOS  E VARIÁVEIS",
+        "SALARIOS E ENCARGOS",
+        ". SALÁRIOS",
+        ". HORAS EXTRAS",
+        ". FÉRIAS",
+        ". 13º SALÁRIO",
+        ". FOLGA TRABALHADA",
+        ". FÉRIAS TRABALHADAS",
+        ". REMUNERAÇÃO SÓCIOS",
+        ". PLR/PRÊMIOS",
+        ". FAP",
+        ". INSS-AVISO INDENIZADO",
+        ". FGTS FOLHA",
+        ". INSS FOLHA",
+        ". RESCISÃO CONTRATUAL",
+        "BENEFÍCIOS",
+        ". VALE REFEIÇÃO",
+        ". VALE TRANSPORTE",
+        ". CESTA BÁSICA",
+        ". PLANO DE SAÚDE",
+        ". ASSISTÊNCIA ADONTOLOGICA",
+        ". FARMÁCIA E MEDICAMENTOS",
+        ". CESTA BÁSCIA COMPLEMENTAR",
+        ". SEGURO DE VIDA EM GRUPO",
+        ". CURSOS/TREINAMENTOS - EXTERNO",
+        ". CURSOS/TREINAMENTOS - INTERNOS",
+        ". ROUPAS E EQUIP TRABALHO",
+        ". CONVÊNIO FUNCIONÁRIOS",
+        ". PRÊMIO ASSIDUIDADE/BOA PERMANE",
+        "ASPECTOS TRABALHISTAS",
+        ". MULTA FGTS",
+        ". ACORDOS TRABALHISTAS",
+        ". INDENIZAÇÕES",
+        ". PERÍCIA MÉDICA",
+        ". DESPESAS - AUDIÊNCIAS",
+        "CUSTOS DE ADMISSÃO",
+        ". ANÚNCIOS/AGÊNCIA DE EMPREGO",
+        ". EXAMES MÉDICOS",
+        ". EXAMES PSICOTÉCNICOS",
+        ". PESQUISAS E INVESTIGAÇÕES",
+        "MÃO DE OBRA TERCEIROS",
+        ". MÃO DE OBRA TERCEIROS",
+        ". OUTROS CUSTOS",
+        "ENERGIAS",
+        ". ENERGIA ELETRICA",
+        ". AGUA",
+        "MANUTENÇÃO",
+        ". MANUTENÇÃO UNIFORMES",
+        ". MANUTENÇÃO MÁQUINAS E EQUIP",
+        ". MANUT VEÍCULOS/SINISTRO INTERN",
+        ". MANUTENÇÃO PREDIAL",
+        ". MANUTENÇÃO ESCRITÓRIO",
+        ". MANUTENÇÃO REDE TELEFÔNICA",
+        ". MANUTENÇÃO E EQUIP INFORMATICA",
+        ". MATERIAIS CONSUMO MANUTENÇÃO",
+        ". SERV. PRESTADOS 3º MANUTENÇÃO",
+        ". FRETES S/ COMPRAS MAT MANUTEN",
+        "MATERIAL DE LIMPEZA",
+        ". MATERIAL DE LIMPEZA",
+        "ALUGUÉIS",
+        ". ALUGUÉIS DE IMÓVEIS",
+        ". ALUGUÉIS DE VEÍCULOS",
+        ". ALUGUEL DE MÁQ E EQUIPAMENTOS",
+        ". ALUGUEL DE MÓVEIS E UTENSÍLIOS",
+        "DESPESAS COM VEÍCULOS",
+        ". COMBUSTÍVEIS",
+        ". LICENC/SEGURO/SEG OBR/DPVAT/IN",
+        ". MULTAS DE VEÍCULOS",
+        ". MONITORAMENTO VEÍCULOS",
+        ". COMUNICAÇÃO VISUAL",
+        "IMPOSTOS, TAXAS E SEGUROS",
+        ". RENOVAÇÃO CERTIFICADO/VISTORIA",
+        ". TAXAS (MUNICIPAL/ESTADUAL/FEDE",
+        ". SEGURO EMPRESARIAL",
+        ". SEGURO RESPONSABILIDADE CIVIL",
+        ". CONTR SINDICAL/ASSOCIAÇOES",
+        ". IPTU",
+        "COMUNICAÇÕES",
+        ". MOTOBOY",
+        ". CORREIO",
+        ". TELECOMUNICAÇÕES - TEL FIXO",
+        ". TELECOMUNICAÇÕES - CELULAR",
+        ". NEXTEL/CLARO",
+        ". LINHA PROCESSAMENTO",
+        ". INTERNET",
+        "VIAGENS E LOCOMOÇÃO",
+        ". VIAGENS E ESTADIAS",
+        ". PEDÁGIO",
+        ". TAXI/ÔNIBUS/ESTACIONAMENTO",
+        ". LANCHES E REFEIÇÕES",
+        ". AJUDA DE CUSTO-REPRESENTANTES",
+        "ADMINISTRAÇÃO",
+        ". FORMAÇÃO PESSOAL/TREINAMENTO",
+        ". BRINDES/DOAÇÕES/EVENTOS INTERN",
+        ". CAFÉ/AGUA/MATERIAL COPA",
+        ". MATERIAL DE CONSUMO DIVERSOS",
+        ". DESPESAS LEGAIS/JUD/CARTORIO",
+        ". IMPRESSOS E MATERIAL DE ESCRIT",
+        ". ASSINATURAS DIVERSAS",
+        ". MOTO BOY",
+        ". BENS PEQ VALOR/MATERIAL POSTO",
+        ". MULTAS INDEDUTIVEIS",
+        ". OUTRAS DESPESAS INDEDUTÍVEIS",
+        "SERVIÇOS CONTRATADOS",
+        ". ASSESSORIA ADMINISTRATIVA",
+        ". ASSESSORIA CONTÁBIL",
+        ". ASSESSORIA JURÍDICA",
+        ". ASSESSORIA TÉCNICA",
+        ". SERVIÇOS PRESTADOS 3º - PF",
+        ". SERVIÇOS PRESTADOS 3º - PJ",
+        "COMISSÕES",
+        ". COMISSÕES REPRESENTANTES",
+        ". OUTRAS COMISSÕES",
+        "DESPESAS COM MARKETING",
+        ". PUBLICIDADE E PROPAGANDA",
+        ". JORNAIS E REVISTAS",
+        ". FEIRA E EVENTOS",
+        ". NOVOS PROJETOS/EXPANSÃO/PESQUI",
+        "DESPESAS COM CLIENTES",
+        ". PERDAS COM CLIENTES",
+        ". BRINDES PARA CLIENTES",
+        ". INDENIZAÇÕES COM CLIENTES",
+        ". CMV - MODELO MGV - ANTIGO PDD",
+        "",
+        "OUTRAS ENTRADAS / SAÍDAS QUE NÃO AFETAM O DRE",
+        "OUTROS IMPOSTOS",
+        ". INTERCOMPANY SUPERVISÃO SIA",
+        ". INTERCOMPANY PROPAR / SIA",
+        ". NTERCOMPANY PROPAR / PRO",
+        ". INTERCOMPANY PROPAR / PRO CLEAN",
+        "IR",
+        "CSLL",
+        "REFIS",
+        "OUTRAS SAÍDAS",
+        ". DEPÓSITO RECURSAL/Simples Sensor",
+        ". BLOQUEIO JUDICIAL",
+        "INVESTIMENTOS",
+        ". SOFTWARE",
+        ". MAQUINAS E EQUIPAMENTOS",
+        ". MÓVEIS E UTENSÍLIOS",
+        ". VEÍCULOS / IMÓVEIS",
+        ". APORTE/AQUISIÇÃO DE EMPRESAS",
+        "DISTRIBUIÇÃO",
+        "RESCISÃO FÁBIO",
+        "DISTRIBUIÇÃO DIVIDENDOS",
+        "",
+        "ENTRADAS / SAÍDAS FINANCEIRAS",
+        ". RECEITAS FINANCEIRAS",
+        ". CCB - CÉDULA CRÉDITO BANCÁRIO - CREDITO",
+        ". CCB - CÉDULA CRÉDITO BANCÁRIO - DEBITO",
+        ". RECEITA FINANCEIRA CCB",
+        ". DESP BANCÁRIAS/BLOQUEIO JUD/IR S/ APLICAÇÕES",
+        "",
+        "Transferência entre empresas",
+        "",
+        "SALDO FINAL",
+        "",
+        "CAIXA EFETIVO",
+        "",
+        "CAIXA EFETIVO ACUMULADO"
+    ]
+    
+    # Criar DataFrame vazio do painel
+    df_painel = pd.DataFrame(index=estrutura_painel)
+    
+    # Adicionar colunas de data
+    for i, data in enumerate(datas):
+        col_name = data.strftime('%Y-%m')
+        df_painel[col_name] = 0.0
+    
+    return df_painel, datas
+
+# ============================================================================
+# FUNÇÕES DE PROCESSAMENTO
+# ============================================================================
+@st.cache_data
+def carregar_dados_base(uploaded_file):
+    """Carrega e processa o arquivo de base Excel"""
+    try:
+        # Ler o arquivo Excel, especificando a aba 'Base'
+        df_base = pd.read_excel(uploaded_file, sheet_name='Base', engine='openpyxl')
+        return df_base
+    except Exception as e:
+        st.error(f"Erro ao carregar o arquivo: {e}")
         return None
 
-    # Converter data
-    df_base['Dt.pagto'] = pd.to_datetime(df_base['Dt.pagto'], errors='coerce', dayfirst=False)
-    df_base = df_base.dropna(subset=['Dt.pagto', 'Vl.rateado']).copy()
-    df_base['Ano-Mês'] = df_base['Dt.pagto'].dt.to_period('M').astype(str)
+def processar_base_para_painel(df_base, df_painel, datas, filtros=None):
+    """
+    Processa os dados da base e preenche o painel.
+    Aplica filtros de empresa, cliente e data quando fornecidos.
+    """
+    # Criar cópia para não modificar o original
+    df_painel_filled = df_painel.copy()
+    df_base_filtered = df_base.copy() if df_base is not None else pd.DataFrame()
+    
+    # Aplicar filtros se fornecidos
+    if filtros and df_base_filtered is not None and not df_base_filtered.empty:
+        if 'Empresa' in filtros and filtros['Empresa'] and 'Fantasia' in df_base_filtered.columns:
+            df_base_filtered = df_base_filtered[df_base_filtered['Fantasia'].str.contains(filtros['Empresa'], na=False, case=False)]
+        
+        if 'Cliente' in filtros and filtros['Cliente'] and 'Fantasia' in df_base_filtered.columns:
+            df_base_filtered = df_base_filtered[df_base_filtered['Fantasia'].str.contains(filtros['Cliente'], na=False, case=False)]
+        
+        if 'Data Início' in filtros and filtros['Data Início'] and 'Dt.pagto' in df_base_filtered.columns:
+            df_base_filtered = df_base_filtered[pd.to_datetime(df_base_filtered['Dt.pagto']) >= pd.to_datetime(filtros['Data Início'])]
+        
+        if 'Data Fim' in filtros and filtros['Data Fim'] and 'Dt.pagto' in df_base_filtered.columns:
+            df_base_filtered = df_base_filtered[pd.to_datetime(df_base_filtered['Dt.pagto']) <= pd.to_datetime(filtros['Data Fim'])]
+    
+    # Se não há dados, retornar painel vazio
+    if df_base_filtered is None or df_base_filtered.empty:
+        return df_painel_filled
+    
+    # Agrupar por descrição e mês
+    # Criar coluna de mês a partir da data de pagamento
+    if 'Dt.pagto' in df_base_filtered.columns:
+        df_base_filtered['Mês'] = pd.to_datetime(df_base_filtered['Dt.pagto']).dt.to_period('M')
+        
+        # Agrupar por descrição e mês, somando os valores
+        grouped = df_base_filtered.groupby(['Descrição', 'Mês'])['Vl.rateado'].sum().reset_index()
+        
+        # Preencher o painel
+        for _, row in grouped.iterrows():
+            descricao = row['Descrição']
+            mes = row['Mês']
+            valor = row['Vl.rateado']
+            
+            # Converter período para string no formato YYYY-MM
+            mes_str = str(mes)
+            
+            # Verificar se a descrição existe no painel
+            if descricao in df_painel_filled.index and mes_str in df_painel_filled.columns:
+                df_painel_filled.loc[descricao, mes_str] += valor
+    
+    return df_painel_filled
 
-    # Converter valores
-    df_base['Vl.rateado'] = pd.to_numeric(df_base['Vl.rateado'], errors='coerce').fillna(0)
+def calcular_saldos(df_painel_filled):
+    """
+    Calcula os saldos inicial e final com base nos dados.
+    """
+    # Identificar colunas de mês (assumindo que são todas as colunas exceto a primeira que é o índice)
+    meses_cols = df_painel_filled.columns.tolist()
+    
+    # SALDO INICIAL - primeiro mês
+    if 'SALDO INICIAL' in df_painel_filled.index and len(meses_cols) > 0:
+        primeiro_mes = meses_cols[0]
+        # Se o saldo inicial estiver vazio, definir como 0
+        if pd.isna(df_painel_filled.loc['SALDO INICIAL', primeiro_mes]) or df_painel_filled.loc['SALDO INICIAL', primeiro_mes] == 0:
+            df_painel_filled.loc['SALDO INICIAL', primeiro_mes] = 6355160.80  # Valor do arquivo original
+    
+    # Calcular saldos subsequentes
+    for i in range(len(meses_cols)):
+        mes_atual = meses_cols[i]
+        
+        # Calcular saldo inicial para meses seguintes
+        if i > 0:
+            mes_anterior = meses_cols[i-1]
+            if 'SALDO FINAL' in df_painel_filled.index:
+                saldo_anterior = df_painel_filled.loc['SALDO FINAL', mes_anterior]
+                if 'SALDO INICIAL' in df_painel_filled.index:
+                    df_painel_filled.loc['SALDO INICIAL', mes_atual] = saldo_anterior
+        
+        # Calcular receitas totais
+        receitas_indices = ['FATURAMENTO', 'FATURAMENTO - devedores', 'INSS RETIDO EM NOTA', 'DEPOSITO A IDENTIFICAR']
+        if 'RECEITAS TOTAL' in df_painel_filled.index:
+            receitas_total = 0
+            for idx in receitas_indices:
+                if idx in df_painel_filled.index:
+                    receitas_total += df_painel_filled.loc[idx, mes_atual]
+            df_painel_filled.loc['RECEITAS TOTAL', mes_atual] = receitas_total
+        
+        # Calcular saldo final
+        if 'SALDO FINAL' in df_painel_filled.index:
+            saldo_inicial = df_painel_filled.loc['SALDO INICIAL', mes_atual] if 'SALDO INICIAL' in df_painel_filled.index else 0
+            receitas = df_painel_filled.loc['RECEITAS TOTAL', mes_atual] if 'RECEITAS TOTAL' in df_painel_filled.index else 0
+            
+            # Somar todas as saídas (valores negativos)
+            saidas = 0
+            for idx in df_painel_filled.index:
+                if idx not in ['SALDO INICIAL', 'RECEITAS TOTAL', 'SALDO FINAL', 'CAIXA EFETIVO', 'CAIXA EFETIVO ACUMULADO']:
+                    valor = df_painel_filled.loc[idx, mes_atual]
+                    if pd.notna(valor) and valor < 0:
+                        saidas += valor
+            
+            df_painel_filled.loc['SALDO FINAL', mes_atual] = saldo_inicial + receitas + saidas
+        
+        # Calcular caixa efetivo (variação)
+        if 'CAIXA EFETIVO' in df_painel_filled.index:
+            saldo_inicial = df_painel_filled.loc['SALDO INICIAL', mes_atual] if 'SALDO INICIAL' in df_painel_filled.index else 0
+            saldo_final = df_painel_filled.loc['SALDO FINAL', mes_atual] if 'SALDO FINAL' in df_painel_filled.index else 0
+            df_painel_filled.loc['CAIXA EFETIVO', mes_atual] = saldo_final - saldo_inicial
+    
+    # Calcular caixa efetivo acumulado
+    if 'CAIXA EFETIVO ACUMULADO' in df_painel_filled.index:
+        acumulado = 0
+        for mes in meses_cols:
+            if 'CAIXA EFETIVO' in df_painel_filled.index:
+                acumulado += df_painel_filled.loc['CAIXA EFETIVO', mes]
+            df_painel_filled.loc['CAIXA EFETIVO ACUMULADO', mes] = acumulado
+    
+    return df_painel_filled
 
-    # Mapear contas (códigos) para suas categorias de nível superior (ex: 41101 -> SALARIOS E ENCARGOS)
-    # Esta é uma simplificação. O ideal seria pegar essa hierarquia do Painel.
-    df_base['Categoria'] = df_base['Segmento'].astype(str).str[:5]
+# ============================================================================
+# FUNÇÕES DE VISUALIZAÇÃO
+# ============================================================================
+def exibir_painel(df_painel):
+    """Exibe o painel completo formatado"""
+    
+    # Formatar números
+    df_display = df_painel.copy()
+    for col in df_display.columns:
+        df_display[col] = df_display[col].apply(lambda x: f"R$ {x:,.2f}" if pd.notna(x) else "R$ 0,00")
+    
+    st.dataframe(df_display, use_container_width=True, height=800)
 
-    # Preencher nulos
-    df_base['Fantasia'] = df_base['Fantasia'].fillna('Outros')
-    df_base['Segmento'] = df_base['Segmento'].fillna('Outros')
-
-    return df_base
-
-def construir_painel_filtrado(df_painel, df_base_filtrado, meses):
-    """Constrói o painel de fluxo de caixa dinamicamente a partir da estrutura do painel."""
-    linhas_relevantes = []
-    for index, row in df_painel.iterrows():
-        descricao = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ''
-        if descricao and descricao not in ['', 'nan', 'CAIXA EFETIVO', 'CAIXA EFETIVO ACUMULADO']:
-            linhas_relevantes.append(index)
-
-    painel_df = df_painel.iloc[linhas_relevantes].copy()
-    painel_df.reset_index(drop=True, inplace=True)
-
-    # Pegar apenas as linhas com descrição e código (linhas de totais e detalhes)
-    painel_df = painel_df[painel_df.iloc[:, 0].notna()].copy()
-
-    resultado = pd.DataFrame()
-    resultado['Descrição'] = painel_df.iloc[:, 0].astype(str).str.strip()
-    # A primeira coluna numérica (índice 2) é o início dos meses
-    meses_col_indices = range(2, len(painel_df.columns))
-
-    for col_idx in meses_col_indices:
-        mes = painel_df.columns[col_idx]
-        if pd.isna(mes) or 'Unnamed' in str(mes):
-            continue
-
-        mes_str = str(mes)
-        if mes_str not in meses:
-            continue
-
-        valores_mes = []
-        for _, row in painel_df.iterrows():
-            # Se for uma linha de total (começa com número e espaço) ou uma linha de detalhe (começa com ponto)
-            desc = str(row.iloc[0])
-            codigo_conta = desc.split()[0] if desc and desc[0].isdigit() else None
-
-            if codigo_conta:
-                # Filtrar a base pelo código da conta
-                mask_categoria = df_base_filtrado['Segmento'].astype(str).str.startswith(codigo_conta)
-                valor_filtrado = df_base_filtrado.loc[mask_categoria, 'Vl.rateado'].sum()
-                valores_mes.append(valor_filtrado)
-            else:
-                # Linha de título (ex: RECEITAS TOTAL), manter o valor do painel original (não usaremos)
-                # Vamos usar a soma dos filhos para calcular os totais posteriormente.
-                valores_mes.append(0)  # Placeholder, será recalculado
-
-        resultado[mes_str] = valores_mes
-
-    return resultado
-
-def calcular_saldos(painel_valores, saldo_inicial, meses, df_base_filtrado):
-    """Calcula os saldos com base nos fluxos filtrados."""
-    saldos = []
-    saldo_acumulado = saldo_inicial
-
-    for i, mes in enumerate(meses):
-        # Encontrar a linha de "SALDO INICIAL" e "SALDO FINAL"
-        fluxo_liquido = 0
-        # Somar todas as entradas e saídas (linhas que não são títulos)
-        # Vamos pegar a soma de todos os valores, já que as contas de receita são positivas e despesas negativas
-        fluxo_liquido = painel_valores[mes].sum()
-
-        # Adicionar o saldo inicial no primeiro mês
-        if i == 0:
-            saldo_final = saldo_inicial + fluxo_liquido
-        else:
-            saldo_final = saldo_acumulado + fluxo_liquido
-
-        saldos.append({'Mês': mes, 'Saldo Inicial': saldo_acumulado, 'Fluxo Líquido': fluxo_liquido, 'Saldo Final': saldo_final})
-        saldo_acumulado = saldo_final
-
-    return pd.DataFrame(saldos)
-
-# --- Interface Streamlit ---
-st.sidebar.header("📂 Upload e Filtros")
-
-uploaded_file = st.sidebar.file_uploader("Carregar arquivo Excel (abas: Painel e Base)", type=['xlsx', 'xls'])
-
-if uploaded_file is not None:
-    # Carregar dados
-    df_painel_raw, df_base_raw = carregar_dados(uploaded_file)
-
-    if df_painel_raw is not None and df_base_raw is not None:
-        # Processar base
-        df_base = processar_base(df_base_raw)
-        if df_base is None:
-            st.stop()
-
-        # Processar painel para obter saldo inicial e estrutura
-        df_painel_estrutura, saldo_inicial_val, header_idx = processar_painel(df_painel_raw)
-
-        if df_painel_estrutura is None:
-            st.stop()
-
-        st.sidebar.success("Dados carregados com sucesso!")
-
-        # --- Filtros ---
-        empresas = sorted(df_base['Fantasia'].dropna().unique())
-        clientes = sorted(df_base['Segmento'].dropna().unique())
-        datas_disponiveis = sorted(df_base['Ano-Mês'].unique())
-
-        with st.sidebar:
-            st.subheader("🔍 Filtros")
-            empresas_selecionadas = st.multiselect("Empresa (Fantasia)", empresas, default=empresas)
-            clientes_selecionados = st.multiselect("Cliente (Segmento)", clientes, default=clientes)
-            data_range = st.select_slider(
-                "Período",
-                options=datas_disponiveis,
-                value=(datas_disponiveis[0], datas_disponiveis[-1]) if datas_disponiveis else (None, None)
-            )
-
-        # Aplicar filtros
-        df_filtrado = df_base.copy()
-        if empresas_selecionadas:
-            df_filtrado = df_filtrado[df_filtrado['Fantasia'].isin(empresas_selecionadas)]
-        if clientes_selecionados:
-            df_filtrado = df_filtrado[df_filtrado['Segmento'].isin(clientes_selecionados)]
-        if data_range[0] and data_range[1]:
-            df_filtrado = df_filtrado[(df_filtrado['Ano-Mês'] >= data_range[0]) & (df_filtrado['Ano-Mês'] <= data_range[1])]
-
-        meses_no_periodo = sorted(df_filtrado['Ano-Mês'].unique())
-
-        if not meses_no_periodo:
-            st.warning("Nenhum dado encontrado para o período e filtros selecionados.")
-            st.stop()
-
-        # Construir painel de valores
-        painel_valores = construir_painel_filtrado(df_painel_estrutura, df_filtrado, meses_no_periodo)
-
-        # Calcular totais por categoria (linhas de título como RECEITAS TOTAL, etc.)
-        # Isso é complexo de fazer automaticamente sem a hierarquia. Vamos mostrar as contas individuais.
-        st.subheader("📊 Fluxo de Caixa Detalhado")
-
-        # Exibir o painel
-        col_config = {"Descrição": st.column_config.TextColumn("Descrição", width="large")}
-        for mes in meses_no_periodo:
-            col_config[mes] = st.column_config.NumberColumn(mes, format="R$ %.2f")
-
-        st.dataframe(painel_valores, use_container_width=True, column_config=col_config)
-
-        # Calcular e mostrar saldos
-        st.divider()
-        st.subheader("📈 Evolução do Saldo")
-
-        df_saldos = calcular_saldos(painel_valores, saldo_inicial_val, meses_no_periodo, df_filtrado)
-
-        # Gráfico
-        fig = px.line(df_saldos, x='Mês', y=['Saldo Inicial', 'Saldo Final'],
-                      title="Saldo Inicial vs Final por Mês",
-                      markers=True, template="plotly_white")
-        fig.update_layout(yaxis_title="Valor (R$)")
+def exibir_graficos(df_painel):
+    """Exibe gráficos de análise"""
+    
+    # Preparar dados
+    meses = df_painel.columns.tolist()
+    
+    # Gráfico de Saldo Inicial vs Final
+    if 'SALDO INICIAL' in df_painel.index and 'SALDO FINAL' in df_painel.index:
+        saldo_inicial = [df_painel.loc['SALDO INICIAL', mes] for mes in meses]
+        saldo_final = [df_painel.loc['SALDO FINAL', mes] for mes in meses]
+        
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=meses, y=saldo_inicial, mode='lines+markers', name='Saldo Inicial'))
+        fig.add_trace(go.Scatter(x=meses, y=saldo_final, mode='lines+markers', name='Saldo Final'))
+        
+        fig.update_layout(
+            title='Evolução do Saldo',
+            xaxis_title='Mês',
+            yaxis_title='Valor (R$)',
+            hovermode='x unified',
+            height=500
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # Gráfico de Receitas vs Despesas
+    if 'RECEITAS TOTAL' in df_painel.index:
+        receitas = [df_painel.loc['RECEITAS TOTAL', mes] for mes in meses]
+        
+        # Calcular despesas totais (soma de todos os negativos que não são receitas)
+        despesas = []
+        for mes in meses:
+            total_despesas = 0
+            for idx in df_painel.index:
+                if idx not in ['SALDO INICIAL', 'RECEITAS TOTAL', 'SALDO FINAL', 'CAIXA EFETIVO', 'CAIXA EFETIVO ACUMULADO']:
+                    valor = df_painel.loc[idx, mes]
+                    if pd.notna(valor) and valor < 0:
+                        total_despesas += valor
+            despesas.append(abs(total_despesas))
+        
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=meses, y=receitas, name='Receitas', marker_color='#10b981'))
+        fig.add_trace(go.Bar(x=meses, y=despesas, name='Despesas', marker_color='#ef4444'))
+        
+        fig.update_layout(
+            title='Receitas vs Despesas',
+            xaxis_title='Mês',
+            yaxis_title='Valor (R$)',
+            barmode='group',
+            height=500
+        )
+        
         st.plotly_chart(fig, use_container_width=True)
 
-        # Tabela de saldos
-        st.dataframe(df_saldos.style.format({
-            'Saldo Inicial': 'R$ {:,.2f}',
-            'Fluxo Líquido': 'R$ {:,.2f}',
-            'Saldo Final': 'R$ {:,.2f}'
-        }), use_container_width=True, hide_index=True)
+def exibir_metricas_principais(df_painel):
+    """Exibe métricas principais em cards"""
+    
+    meses = df_painel.columns.tolist()
+    ultimo_mes = meses[-2] if len(meses) > 1 else meses[0]  # Último mês do ano
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        saldo_atual = df_painel.loc['SALDO FINAL', ultimo_mes] if 'SALDO FINAL' in df_painel.index else 0
+        st.metric(
+            label=f"Saldo Final ({ultimo_mes})",
+            value=f"R$ {saldo_atual:,.2f}",
+            delta=None
+        )
+    
+    with col2:
+        receita_total = df_painel.loc['RECEITAS TOTAL', ultimo_mes] if 'RECEITAS TOTAL' in df_painel.index else 0
+        st.metric(
+            label=f"Receitas ({ultimo_mes})",
+            value=f"R$ {receita_total:,.2f}",
+            delta=None
+        )
+    
+    with col3:
+        # Calcular despesas totais
+        despesas_total = 0
+        for idx in df_painel.index:
+            if idx not in ['SALDO INICIAL', 'RECEITAS TOTAL', 'SALDO FINAL', 'CAIXA EFETIVO', 'CAIXA EFETIVO ACUMULADO']:
+                valor = df_painel.loc[idx, ultimo_mes]
+                if pd.notna(valor) and valor < 0:
+                    despesas_total += valor
+        st.metric(
+            label=f"Despesas ({ultimo_mes})",
+            value=f"R$ {abs(despesas_total):,.2f}",
+            delta=None
+        )
+    
+    with col4:
+        caixa_efetivo = df_painel.loc['CAIXA EFETIVO', ultimo_mes] if 'CAIXA EFETIVO' in df_painel.index else 0
+        cor = "positive" if caixa_efetivo >= 0 else "negative"
+        st.markdown(f"""
+        <div class="metric-card">
+            <h3>Caixa Efetivo ({ultimo_mes})</h3>
+            <p class="{cor}">R$ {caixa_efetivo:,.2f}</p>
+        </div>
+        """, unsafe_allow_html=True)
 
-        # Resumo Executivo
+# ============================================================================
+# APLICAÇÃO PRINCIPAL
+# ============================================================================
+def main():
+    st.markdown('<p class="main-header">💰 Fluxo de Caixa Real - Dashboard</p>', unsafe_allow_html=True)
+    
+    # Sidebar - Filtros e upload
+    with st.sidebar:
+        st.header("📁 Upload da Base")
+        uploaded_file = st.file_uploader(
+            "Carregar arquivo Excel (aba 'Base')",
+            type=['xlsx'],
+            help="Formato esperado: arquivo com aba 'Base' contendo as transações"
+        )
+        
         st.divider()
-        st.subheader("📋 Resumo Executivo")
-        col1, col2, col3 = st.columns(3)
+        
+        st.header("🔍 Filtros")
+        
+        # Obter opções para filtros se houver dados
+        empresas = []
+        clientes = []
+        if uploaded_file and 'df_base' in st.session_state and st.session_state.df_base is not None:
+            df_base = st.session_state.df_base
+            if 'Fantasia' in df_base.columns:
+                empresas = df_base['Fantasia'].dropna().unique().tolist()
+                clientes = df_base['Fantasia'].dropna().unique().tolist()
+        
+        filtro_empresa = st.selectbox(
+            "Empresa",
+            options=["Todas"] + empresas,
+            index=0
+        )
+        
+        filtro_cliente = st.selectbox(
+            "Cliente",
+            options=["Todos"] + clientes,
+            index=0
+        )
+        
+        st.subheader("Período")
+        col1, col2 = st.columns(2)
         with col1:
-            st.metric("Saldo Inicial (Período)", f"R$ {df_saldos['Saldo Inicial'].iloc[0]:,.2f}")
+            data_inicio = st.date_input(
+                "Data Início",
+                value=datetime(2025, 1, 1)
+            )
         with col2:
-            st.metric("Fluxo Líquido Total (Período)", f"R$ {df_saldos['Fluxo Líquido'].sum():,.2f}")
-        with col3:
-            st.metric("Saldo Final (Período)", f"R$ {df_saldos['Saldo Final'].iloc[-1]:,.2f}")
+            data_fim = st.date_input(
+                "Data Fim",
+                value=datetime(2025, 12, 31)
+            )
+        
+        st.divider()
+        
+        st.header("⚙️ Ações")
+        if st.button("🔄 Atualizar Dashboard", use_container_width=True, type="primary"):
+            st.session_state.atualizar = True
+        
+        if st.button("📊 Exportar Painel", use_container_width=True):
+            if 'df_painel_filled' in st.session_state:
+                # Converter para Excel
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    st.session_state.df_painel_filled.to_excel(writer, sheet_name='Painel')
+                st.download_button(
+                    label="📥 Download Excel",
+                    data=output.getvalue(),
+                    file_name="fluxo_caixa_painel.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+    
+    # Área principal
+    tab1, tab2, tab3 = st.tabs(["📋 Painel Completo", "📈 Análise Gráfica", "📊 Base de Dados"])
+    
+    # Inicializar session state
+    if 'df_painel' not in st.session_state:
+        st.session_state.df_painel, st.session_state.datas = criar_modelo_painel()
+    
+    if 'df_painel_filled' not in st.session_state:
+        st.session_state.df_painel_filled = st.session_state.df_painel.copy()
+    
+    # Processar novo arquivo se carregado
+    if uploaded_file is not None:
+        df_base = carregar_dados_base(uploaded_file)
+        if df_base is not None:
+            st.session_state.df_base = df_base
+            st.sidebar.success(f"✅ Base carregada: {len(df_base)} registros")
+    
+    # Aplicar filtros e atualizar
+    if 'df_base' in st.session_state and st.session_state.get('atualizar', False):
+        with st.spinner("Processando dados..."):
+            # Criar filtros
+            filtros = {}
+            if filtro_empresa != "Todas":
+                filtros['Empresa'] = filtro_empresa
+            if filtro_cliente != "Todos":
+                filtros['Cliente'] = filtro_cliente
+            filtros['Data Início'] = data_inicio
+            filtros['Data Fim'] = data_fim
+            
+            # Processar
+            df_painel_filled = processar_base_para_painel(
+                st.session_state.df_base,
+                st.session_state.df_painel.copy(),
+                st.session_state.datas,
+                filtros
+            )
+            df_painel_filled = calcular_saldos(df_painel_filled)
+            st.session_state.df_painel_filled = df_painel_filled
+            st.session_state.atualizar = False
+            st.rerun()
+    
+    # Tab 1: Painel Completo
+    with tab1:
+        if 'df_painel_filled' in st.session_state:
+            # Métricas principais
+            exibir_metricas_principais(st.session_state.df_painel_filled)
+            
+            st.divider()
+            
+            # Painel completo
+            st.subheader("📋 Painel de Fluxo de Caixa")
+            exibir_painel(st.session_state.df_painel_filled)
+    
+    # Tab 2: Análise Gráfica
+    with tab2:
+        if 'df_painel_filled' in st.session_state:
+            exibir_graficos(st.session_state.df_painel_filled)
+            
+            # Tabela resumo
+            st.divider()
+            st.subheader("📊 Resumo Mensal")
+            
+            resumo_indices = ['SALDO INICIAL', 'RECEITAS TOTAL', 'SALDO FINAL', 'CAIXA EFETIVO']
+            resumo_df = pd.DataFrame()
+            for idx in resumo_indices:
+                if idx in st.session_state.df_painel_filled.index:
+                    resumo_df[idx] = st.session_state.df_painel_filled.loc[idx]
+            
+            # Formatar
+            for col in resumo_df.columns:
+                resumo_df[col] = resumo_df[col].apply(lambda x: f"R$ {x:,.2f}" if pd.notna(x) else "R$ 0,00")
+            
+            st.dataframe(resumo_df, use_container_width=True)
+    
+    # Tab 3: Base de Dados
+    with tab3:
+        st.subheader("📊 Base de Dados Carregada")
+        
+        if 'df_base' in st.session_state:
+            df_base = st.session_state.df_base
+            
+            # Estatísticas rápidas
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total de Registros", len(df_base))
+            with col2:
+                if 'Vl.rateado' in df_base.columns:
+                    total_valor = df_base['Vl.rateado'].sum()
+                    st.metric("Valor Total", f"R$ {total_valor:,.2f}")
+            with col3:
+                if 'Dt.pagto' in df_base.columns:
+                    datas = pd.to_datetime(df_base['Dt.pagto']).dt.date
+                    periodo = f"{datas.min()} a {datas.max()}"
+                    st.metric("Período", periodo)
+            
+            st.dataframe(df_base, use_container_width=True, height=600)
+        else:
+            st.info("ℹ️ Nenhuma base carregada. Use o menu lateral para fazer upload.")
 
-else:
-    st.info("👈 Carregue o arquivo Excel no menu lateral para começar.")
-    st.markdown("""
-    **Formato esperado do arquivo:**
-    - Aba **Painel**: Estrutura do fluxo de caixa (linhas de conta, datas no cabeçalho, valores totais).
-    - Aba **Base**: Lançamentos individuais com colunas como 'Dt.pagto', 'Vl.rateado', 'Fantasia', 'Segmento' (código da conta).
-    """)
+if __name__ == "__main__":
+    main()
