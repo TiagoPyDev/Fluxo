@@ -738,3 +738,12 @@ else:
         ### Exemplo de linhas:
         Empresa	Segmento	Descrição	Vl.rateado	Valor	Dt.emissao	Mês
 PRO SERVIÇOS LONDRINA	31101001	FATURAMENTO	253.91	2025-08-08	2025-08-08	2025-08-01
+### Mapeamento de Categorias
+Os códigos de segmento são automaticamente mapeados para as categorias do painel:
+- **31101001, 31101004** → RECEITAS TOTAL
+- **61301010, 61301011, 61301012, 61301013, 61301014** → IMPOSTOS SOBRE VENDAS
+- **41101001 até 41213004** → DESEMBOLSOS FIXOS E VARIÁVEIS
+- **61301069** → Transferência entre empresas
+- **61301022, 61301072, 61301077, 61301019, 61301020, 61301037** → ENTRADAS/SAÍDAS FINANCEIRAS
+- Demais códigos 6130... → OUTRAS ENTRADAS/SAÍDAS QUE NÃO AFETAM O DRE
+""")
