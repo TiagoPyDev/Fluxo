@@ -62,10 +62,6 @@ def load_data(uploaded_file):
             st.warning("Carregando dados de exemplo. Faça upload do seu arquivo para dados reais.")
             return None, None
         
-        # Mostrar as colunas encontradas para debug
-        st.sidebar.write("Colunas encontradas - Entradas:", list(df_entradas.columns))
-        st.sidebar.write("Colunas encontradas - Saídas:", list(df_saidas.columns))
-        
         # Identificar as colunas corretas (ignorando espaços e diferenças de maiúsculas/minúsculas)
         def find_column(df, possible_names):
             df_cols_lower = {col.lower().strip(): col for col in df.columns}
@@ -367,11 +363,34 @@ if df_entradas is not None and df_saidas is not None and len(df_entradas) > 0 an
             line=dict(width=3)
         ))
         
-        # Linha vertical separando real do projetado
+        # Adicionar anotação para separar real do projetado (substituindo add_vline problemático)
         if 'Projetado' in fluxo.columns and len(fluxo[~fluxo['Projetado']]) > 0:
-            last_real = fluxo[~fluxo['Projetado']].iloc[-1]['Mês/Ano']
-            fig.add_vline(x=last_real, line_dash="dash", line_color="orange",
-                         annotation_text="Início da Projeção", annotation_position="top right")
+            last_real_index = len(fluxo[~fluxo['Projetado']]) - 1
+            last_real_x = fluxo[~fluxo['Projetado']].iloc[-1]['Mês/Ano']
+            
+            # Adicionar uma linha vertical como shape
+            fig.add_shape(
+                type="line",
+                x0=last_real_x,
+                y0=0,
+                x1=last_real_x,
+                y1=1,
+                yref="paper",
+                line=dict(color="orange", width=2, dash="dash"),
+            )
+            
+            # Adicionar anotação
+            fig.add_annotation(
+                x=last_real_x,
+                y=1,
+                yref="paper",
+                text="Início da Projeção",
+                showarrow=True,
+                arrowhead=2,
+                ax=40,
+                ay=-30,
+                font=dict(size=12, color="orange")
+            )
         
         fig.update_layout(
             barmode='group',
