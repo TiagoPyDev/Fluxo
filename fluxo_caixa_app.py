@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import calendar
 import io
+import re
 
 # Configuração da página
 st.set_page_config(
@@ -18,36 +19,111 @@ st.set_page_config(
 st.title("💰 Dashboard de Fluxo de Caixa")
 st.markdown("---")
 
+# Função para limpar e converter valores monetários
+def clean_currency(value):
+    if pd.isna(value):
+        return 0
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        # Remover espaços, R$, pontos e converter vírgula para ponto
+        value = re.sub(r'[R$\s]', '', value)
+        value = value.replace('.', '').replace(',', '.')
+        try:
+            return float(value)
+        except:
+            return 0
+    return 0
+
 # Função para carregar dados
 @st.cache_data
 def load_data(uploaded_file):
     try:
         if uploaded_file is not None:
-            df_entradas = pd.read_excel(uploaded_file, sheet_name='Entradas')
-            df_saidas = pd.read_excel(uploaded_file, sheet_name='Saídas')
+            # Tentar ler as abas com diferentes nomes possíveis
+            try:
+                df_entradas = pd.read_excel(uploaded_file, sheet_name='Entradas')
+            except:
+                try:
+                    df_entradas = pd.read_excel(uploaded_file, sheet_name='entradas')
+                except:
+                    st.error("Não foi possível encontrar a aba 'Entradas' no arquivo")
+                    return None, None
+            
+            try:
+                df_saidas = pd.read_excel(uploaded_file, sheet_name='Saídas')
+            except:
+                try:
+                    df_saidas = pd.read_excel(uploaded_file, sheet_name='saidas')
+                except:
+                    st.error("Não foi possível encontrar a aba 'Saídas' no arquivo")
+                    return None, None
         else:
             st.warning("Carregando dados de exemplo. Faça upload do seu arquivo para dados reais.")
             return None, None
+        
+        # Mostrar as colunas encontradas para debug
+        st.sidebar.write("Colunas encontradas - Entradas:", list(df_entradas.columns))
+        st.sidebar.write("Colunas encontradas - Saídas:", list(df_saidas.columns))
+        
+        # Identificar as colunas corretas (ignorando espaços e diferenças de maiúsculas/minúsculas)
+        def find_column(df, possible_names):
+            df_cols_lower = {col.lower().strip(): col for col in df.columns}
+            for name in possible_names:
+                if name.lower().strip() in df_cols_lower:
+                    return df_cols_lower[name.lower().strip()]
+            return None
+        
+        # Colunas possíveis para empresa
+        empresa_col = find_column(df_entradas, ['Empresa', 'EMPRESA', 'empresa'])
+        if empresa_col is None:
+            st.error("Coluna 'Empresa' não encontrada nos dados")
+            return None, None
+        
+        # Colunas possíveis para valor
+        valor_col = find_column(df_entradas, ['Vl.rateado', 'VL.RATEADO', 'vl.rateado', 'Valor', 'VALOR', 'valor'])
+        if valor_col is None:
+            st.error("Coluna de valor não encontrada nos dados")
+            return None, None
+        
+        # Colunas possíveis para data
+        data_col = find_column(df_entradas, ['Dt.pagto', 'DT.PAGTO', 'dt.pagto', 'Data', 'DATA', 'data'])
+        if data_col is None:
+            st.error("Coluna de data não encontrada nos dados")
+            return None, None
+        
+        # Renomear colunas para nomes padronizados
+        df_entradas = df_entradas.rename(columns={
+            empresa_col: 'Empresa',
+            valor_col: 'Vl.rateado',
+            data_col: 'Dt.pagto'
+        })
+        
+        df_saidas = df_saidas.rename(columns={
+            empresa_col: 'Empresa',
+            valor_col: 'Vl.rateado',
+            data_col: 'Dt.pagto'
+        })
+        
+        # Processar valores
+        df_entradas['Vl.rateado'] = df_entradas['Vl.rateado'].apply(clean_currency)
+        df_saidas['Vl.rateado'] = df_saidas['Vl.rateado'].apply(clean_currency)
         
         # Processar datas
         df_entradas['Dt.pagto'] = pd.to_datetime(df_entradas['Dt.pagto'], errors='coerce')
         df_saidas['Dt.pagto'] = pd.to_datetime(df_saidas['Dt.pagto'], errors='coerce')
         
         # Remover valores nulos
-        df_entradas = df_entradas.dropna(subset=['Dt.pagto'])
-        df_saidas = df_saidas.dropna(subset=['Dt.pagto'])
+        df_entradas = df_entradas.dropna(subset=['Dt.pagto', 'Vl.rateado'])
+        df_saidas = df_saidas.dropna(subset=['Dt.pagto', 'Vl.rateado'])
         
-        # Garantir que Vl.rateado seja numérico
-        df_entradas['Vl.rateado'] = pd.to_numeric(df_entradas['Vl.rateado'], errors='coerce')
-        df_saidas['Vl.rateado'] = pd.to_numeric(df_saidas['Vl.rateado'], errors='coerce')
-        
-        # Remover valores nulos nos valores
-        df_entradas = df_entradas.dropna(subset=['Vl.rateado'])
-        df_saidas = df_saidas.dropna(subset=['Vl.rateado'])
+        # Filtrar valores zero ou muito pequenos (opcional)
+        df_entradas = df_entradas[abs(df_entradas['Vl.rateado']) > 0.01]
+        df_saidas = df_saidas[abs(df_saidas['Vl.rateado']) > 0.01]
         
         return df_entradas, df_saidas
     except Exception as e:
-        st.error(f"Erro ao carregar arquivo: {e}")
+        st.error(f"Erro ao carregar arquivo: {str(e)}")
         return None, None
 
 # Função para criar fluxo de caixa mensal
@@ -56,7 +132,7 @@ def create_monthly_cash_flow(df_entradas, df_saidas, projection_months=3):
         return None
     
     try:
-        # Criar coluna de mês/ano como string
+        # Criar coluna de mês/ano
         df_entradas['Ano'] = df_entradas['Dt.pagto'].dt.year
         df_entradas['Mes'] = df_entradas['Dt.pagto'].dt.month
         df_entradas['Mês/Ano'] = df_entradas['Ano'].astype(str) + '-' + df_entradas['Mes'].astype(str).str.zfill(2)
@@ -219,6 +295,12 @@ if df_entradas is not None and df_saidas is not None and len(df_entradas) > 0 an
         st.warning("Nenhum dado encontrado para os filtros selecionados.")
         st.stop()
     
+    # Mostrar estatísticas básicas
+    with st.sidebar.expander("📊 Estatísticas"):
+        st.write(f"Total de entradas: {len(df_entradas_filtered)}")
+        st.write(f"Total de saídas: {len(df_saidas_filtered)}")
+        st.write(f"Período: {df_entradas_filtered['Dt.pagto'].min().date()} a {df_entradas_filtered['Dt.pagto'].max().date()}")
+    
     # Criar fluxo de caixa
     fluxo = create_monthly_cash_flow(df_entradas_filtered, df_saidas_filtered, projection_months)
     
@@ -316,7 +398,7 @@ if df_entradas is not None and df_saidas is not None and len(df_entradas) > 0 an
         
         # Adicionar coluna de status se existir
         if 'Projetado' in fluxo.columns:
-            fluxo_display['Status'] = fluxo['Projetado'].apply(lambda x: 'Projetado' if x else 'Realizado')
+            fluxo_display['Status'] = fluxo['Projetado'].apply(lambda x: '📅 Projetado' if x else '✅ Realizado')
         
         # Formatação
         for col in ['Entradas', 'Saídas', 'Saldo', 'Saldo Acumulado']:
@@ -332,6 +414,20 @@ if df_entradas is not None and df_saidas is not None and len(df_entradas) > 0 an
         empresas_df = analyze_by_company(df_entradas_filtered, df_saidas_filtered)
         
         if empresas_df is not None and len(empresas_df) > 0:
+            # Gráfico de barras para saldo por empresa
+            empresas_top = empresas_df.nlargest(15, 'Saldo')
+            
+            fig_empresas = px.bar(
+                empresas_top,
+                x='Empresa',
+                y='Saldo',
+                title='Saldo por Empresa (Top 15)',
+                color='Saldo',
+                color_continuous_scale=['red', 'yellow', 'green']
+            )
+            fig_empresas.update_layout(xaxis_tickangle=-45)
+            st.plotly_chart(fig_empresas, use_container_width=True)
+            
             # Gráfico de pizza para entradas por empresa
             col1, col2 = st.columns(2)
             
@@ -358,12 +454,13 @@ if df_entradas is not None and df_saidas is not None and len(df_entradas) > 0 an
                 st.plotly_chart(fig_pie_saidas, use_container_width=True)
             
             # Tabela de empresas
-            empresas_display = empresas_df.copy()
-            empresas_display['Total_Entradas'] = empresas_display['Total_Entradas'].apply(lambda x: f"R$ {x:,.2f}")
-            empresas_display['Total_Saidas'] = empresas_display['Total_Saidas'].apply(lambda x: f"R$ {x:,.2f}")
-            empresas_display['Saldo'] = empresas_display['Saldo'].apply(lambda x: f"R$ {x:,.2f}")
-            
-            st.dataframe(empresas_display, use_container_width=True, hide_index=True)
+            with st.expander("Ver todas as empresas"):
+                empresas_display = empresas_df.copy()
+                empresas_display['Total_Entradas'] = empresas_display['Total_Entradas'].apply(lambda x: f"R$ {x:,.2f}")
+                empresas_display['Total_Saidas'] = empresas_display['Total_Saidas'].apply(lambda x: f"R$ {x:,.2f}")
+                empresas_display['Saldo'] = empresas_display['Saldo'].apply(lambda x: f"R$ {x:,.2f}")
+                
+                st.dataframe(empresas_display, use_container_width=True, hide_index=True)
         
         st.markdown("---")
         
@@ -412,16 +509,16 @@ else:
         O arquivo deve conter duas abas:
         
         **Entradas:**
-        - Empresa (texto)
-        - Vl.rateado (número)
-        - Dt.pagto (data)
+        - Empresa (texto) - Nome da empresa
+        - Vl.rateado (número) - Valor da transação (pode ser com R$, pontos e vírgulas)
+        - Dt.pagto (data) - Data do pagamento
         
         **Saídas:**
-        - Empresa (texto)
-        - Vl.rateado (número)
-        - Dt.pagto (data)
+        - Empresa (texto) - Nome da empresa
+        - Vl.rateado (número) - Valor da transação
+        - Dt.pagto (data) - Data do pagamento
         
-        As datas devem estar no formato reconhecível (ex: 2025-08-08 00:00:00)
+        As datas podem estar em diversos formatos (ex: 2025-08-08, 08/08/2025, etc.)
         """)
 
 # Footer
