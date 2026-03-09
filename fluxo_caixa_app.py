@@ -38,6 +38,10 @@ def clean_currency(value):
             return 0
     return 0
 
+# Função para verificar se é dia útil (segunda a sexta)
+def is_business_day(date):
+    return date.weekday() < 5  # 0-4 = segunda a sexta
+
 # Função para carregar dados
 @st.cache_data
 def load_data(uploaded_file):
@@ -215,46 +219,68 @@ def create_monthly_cash_flow(df_entradas, df_saidas, saldo_inicial, projection_m
         st.error(f"Erro ao criar fluxo de caixa: {e}")
         return None
 
-# Função para criar projeção diária
+# Função para criar projeção diária (apenas dias úteis)
 def create_daily_projection(df_entradas, df_saidas, saldo_inicial, days_to_project=30):
     if df_entradas is None or df_saidas is None:
         return None
     
     try:
+        # Adicionar dia da semana aos dados históricos
+        df_entradas['Dia_Semana'] = df_entradas['Dt.pagto'].dt.dayofweek
+        df_entradas['Dia_Util'] = df_entradas['Dia_Semana'].apply(lambda x: x < 5)
+        
+        df_saidas['Dia_Semana'] = df_saidas['Dt.pagto'].dt.dayofweek
+        df_saidas['Dia_Util'] = df_saidas['Dia_Semana'].apply(lambda x: x < 5)
+        
+        # Calcular médias por dia da semana (apenas dias úteis)
+        entradas_por_dia = df_entradas[df_entradas['Dia_Util']].groupby('Dia_Semana')['Vl.rateado'].mean()
+        saidas_por_dia = df_saidas[df_saidas['Dia_Util']].groupby('Dia_Semana')['Vl.rateado'].mean()
+        
+        # Preencher dias sem dados com a média geral de dias úteis
+        media_geral_entradas = df_entradas[df_entradas['Dia_Util']]['Vl.rateado'].mean()
+        media_geral_saidas = df_saidas[df_saidas['Dia_Util']]['Vl.rateado'].mean()
+        
+        for dia in range(5):  # 0-4 (segunda a sexta)
+            if dia not in entradas_por_dia.index:
+                entradas_por_dia[dia] = media_geral_entradas
+            if dia not in saidas_por_dia.index:
+                saidas_por_dia[dia] = media_geral_saidas
+        
         # Última data nos dados
         last_date = max(df_entradas['Dt.pagto'].max(), df_saidas['Dt.pagto'].max())
         
-        # Calcular padrões diários baseados nos dados históricos
-        df_entradas['Dia_Semana'] = df_entradas['Dt.pagto'].dt.dayofweek
-        df_saidas['Dia_Semana'] = df_saidas['Dt.pagto'].dt.dayofweek
+        # Calcular o saldo atual (já considera o saldo inicial)
+        saldo_atual = saldo_inicial
         
-        # Média por dia da semana
-        entradas_por_dia = df_entradas.groupby('Dia_Semana')['Vl.rateado'].mean()
-        saidas_por_dia = df_saidas.groupby('Dia_Semana')['Vl.rateado'].mean()
-        
-        # Criar projeção diária
+        # Criar projeção diária (apenas dias úteis)
         projection_daily = []
         current_date = last_date + timedelta(days=1)
-        current_saldo = saldo_inicial
+        current_saldo = saldo_atual
+        days_added = 0
         
-        for i in range(days_to_project):
-            dia_semana = current_date.weekday()
-            
-            # Usar média do dia da semana ou média geral se não houver dados
-            entradas_dia = entradas_por_dia.get(dia_semana, df_entradas['Vl.rateado'].mean())
-            saidas_dia = saidas_por_dia.get(dia_semana, df_saidas['Vl.rateado'].mean())
-            
-            saldo_dia = entradas_dia - saidas_dia
-            current_saldo += saldo_dia
-            
-            projection_daily.append({
-                'Data': current_date,
-                'Dia_Semana': ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo'][dia_semana],
-                'Entradas_Projetadas': entradas_dia,
-                'Saidas_Projetadas': saidas_dia,
-                'Saldo_Dia': saldo_dia,
-                'Saldo_Acumulado': current_saldo
-            })
+        dias_semana = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo']
+        
+        while days_added < days_to_project:
+            # Pular fins de semana
+            if is_business_day(current_date):
+                dia_semana = current_date.weekday()
+                
+                entradas_dia = entradas_por_dia[dia_semana]
+                saidas_dia = saidas_por_dia[dia_semana]
+                
+                saldo_dia = entradas_dia - saidas_dia
+                current_saldo += saldo_dia
+                
+                projection_daily.append({
+                    'Data': current_date,
+                    'Dia_Semana': dias_semana[dia_semana],
+                    'Entradas_Projetadas': entradas_dia,
+                    'Saidas_Projetadas': saidas_dia,
+                    'Saldo_Dia': saldo_dia,
+                    'Saldo_Acumulado': current_saldo
+                })
+                
+                days_added += 1
             
             current_date += timedelta(days=1)
         
@@ -293,7 +319,7 @@ with st.sidebar:
     
     st.header("⚙️ Configurações")
     projection_months = st.slider("Meses para projetar (mensal)", 1, 6, 3)
-    projection_days = st.slider("Dias para projetar (diário)", 7, 90, 30)
+    projection_days = st.slider("Dias úteis para projetar", 5, 90, 30)
     
     st.header("📊 Filtros")
     
@@ -360,7 +386,7 @@ if df_entradas is not None and df_saidas is not None and len(df_entradas) > 0 an
     # Criar fluxo de caixa mensal
     fluxo = create_monthly_cash_flow(df_entradas_filtered, df_saidas_filtered, SALDO_INICIAL, projection_months)
     
-    # Criar projeção diária
+    # Criar projeção diária (apenas dias úteis)
     projecao_diaria = create_daily_projection(df_entradas_filtered, df_saidas_filtered, saldo_atual, projection_days)
     
     if fluxo is not None and len(fluxo) > 0:
@@ -383,14 +409,15 @@ if df_entradas is not None and df_saidas is not None and len(df_entradas) > 0 an
         with col5:
             if projecao_diaria is not None and len(projecao_diaria) > 0:
                 saldo_projetado = projecao_diaria['Saldo_Acumulado'].iloc[-1]
-                st.metric("Saldo Projetado (30d)", f"R$ {saldo_projetado:,.2f}")
+                dias_projetados = len(projecao_diaria)
+                st.metric(f"Saldo Projetado ({dias_projetados} dias)", f"R$ {saldo_projetado:,.2f}")
             else:
                 st.metric("Saldo Projetado", "R$ 0,00")
         
         st.markdown("---")
         
         # Tabs para diferentes visualizações
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Fluxo Mensal", "📈 Projeção Diária", "🏢 Análise por Empresa", "🔄 Últimas Transações"])
+        tab1, tab2, tab3, tab4 = st.tabs(["📊 Fluxo Mensal", "📈 Projeção Diária (Dias Úteis)", "🏢 Análise por Empresa", "🔄 Últimas Transações"])
         
         with tab1:
             # Gráfico de Fluxo de Caixa Mensal
@@ -487,7 +514,7 @@ if df_entradas is not None and df_saidas is not None and len(df_entradas) > 0 an
         
         with tab2:
             if projecao_diaria is not None and len(projecao_diaria) > 0:
-                st.subheader(f"Projeção Diária para os Próximos {projection_days} Dias")
+                st.subheader(f"Projeção Diária para os Próximos {len(projecao_diaria)} Dias Úteis")
                 
                 # Gráfico de projeção diária
                 fig_daily = go.Figure()
@@ -498,7 +525,7 @@ if df_entradas is not None and df_saidas is not None and len(df_entradas) > 0 an
                     name='Saldo Projetado',
                     mode='lines+markers',
                     line=dict(color='blue', width=2),
-                    marker=dict(size=4)
+                    marker=dict(size=6)
                 ))
                 
                 # Adicionar linha do saldo atual
@@ -506,7 +533,7 @@ if df_entradas is not None and df_saidas is not None and len(df_entradas) > 0 an
                                    annotation_text="Saldo Atual", annotation_position="bottom left")
                 
                 fig_daily.update_layout(
-                    title='Evolução do Saldo - Projeção Diária',
+                    title='Evolução do Saldo - Projeção Diária (Dias Úteis)',
                     xaxis_title='Data',
                     yaxis_title='Saldo (R$)',
                     height=400,
@@ -535,7 +562,7 @@ if df_entradas is not None and df_saidas is not None and len(df_entradas) > 0 an
                 ))
                 
                 fig_daily_bars.update_layout(
-                    title='Entradas e Saídas Projetadas por Dia',
+                    title='Entradas e Saídas Projetadas por Dia Útil',
                     xaxis_title='Data',
                     yaxis_title='Valor (R$)',
                     height=400,
@@ -544,6 +571,25 @@ if df_entradas is not None and df_saidas is not None and len(df_entradas) > 0 an
                 )
                 
                 st.plotly_chart(fig_daily_bars, use_container_width=True)
+                
+                # Resumo da projeção
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    total_entradas_proj = projecao_diaria['Entradas_Projetadas'].sum()
+                    st.metric("Total Entradas Projetadas", f"R$ {total_entradas_proj:,.2f}")
+                
+                with col2:
+                    total_saidas_proj = projecao_diaria['Saidas_Projetadas'].sum()
+                    st.metric("Total Saídas Projetadas", f"R$ {total_saidas_proj:,.2f}")
+                
+                with col3:
+                    media_entradas_dia = projecao_diaria['Entradas_Projetadas'].mean()
+                    st.metric("Média Entradas/Dia", f"R$ {media_entradas_dia:,.2f}")
+                
+                with col4:
+                    media_saidas_dia = projecao_diaria['Saidas_Projetadas'].mean()
+                    st.metric("Média Saídas/Dia", f"R$ {media_saidas_dia:,.2f}")
                 
                 # Tabela de projeção diária
                 st.subheader("Detalhamento da Projeção Diária")
@@ -666,15 +712,4 @@ else:
         - Dt.pagto (data) - Data do pagamento
         
         **Saídas:**
-        - Empresa (texto) - Nome da empresa
-        - Vl.rateado (número) - Valor da transação
-        - Dt.pagto (data) - Data do pagamento
-        
-        **Saldo Inicial:** R$ 6.355.160,80 (configurado no sistema)
-        
-        As datas podem estar em diversos formatos (ex: 2025-08-08, 08/08/2025, etc.)
-        """)
-
-# Footer
-st.markdown("---")
-st.markdown("Desenvolvido para gestão de fluxo de caixa | Saldo inicial: R$ 6.355.160,80")
+        - Empresa (texto) - Nome
