@@ -19,6 +19,9 @@ st.set_page_config(
 st.title("💰 Dashboard de Fluxo de Caixa")
 st.markdown("---")
 
+# Saldo inicial
+SALDO_INICIAL = 6355160.80  # R$ 6.355.160,80
+
 # Função para limpar e converter valores monetários
 def clean_currency(value):
     if pd.isna(value):
@@ -62,7 +65,7 @@ def load_data(uploaded_file):
             st.warning("Carregando dados de exemplo. Faça upload do seu arquivo para dados reais.")
             return None, None
         
-        # Identificar as colunas corretas (ignorando espaços e diferenças de maiúsculas/minúsculas)
+        # Identificar as colunas corretas
         def find_column(df, possible_names):
             df_cols_lower = {col.lower().strip(): col for col in df.columns}
             for name in possible_names:
@@ -113,7 +116,7 @@ def load_data(uploaded_file):
         df_entradas = df_entradas.dropna(subset=['Dt.pagto', 'Vl.rateado'])
         df_saidas = df_saidas.dropna(subset=['Dt.pagto', 'Vl.rateado'])
         
-        # Filtrar valores zero ou muito pequenos (opcional)
+        # Filtrar valores zero ou muito pequenos
         df_entradas = df_entradas[abs(df_entradas['Vl.rateado']) > 0.01]
         df_saidas = df_saidas[abs(df_saidas['Vl.rateado']) > 0.01]
         
@@ -122,8 +125,8 @@ def load_data(uploaded_file):
         st.error(f"Erro ao carregar arquivo: {str(e)}")
         return None, None
 
-# Função para criar fluxo de caixa mensal
-def create_monthly_cash_flow(df_entradas, df_saidas, projection_months=3):
+# Função para criar fluxo de caixa mensal com saldo inicial
+def create_monthly_cash_flow(df_entradas, df_saidas, saldo_inicial, projection_months=3):
     if df_entradas is None or df_saidas is None or len(df_entradas) == 0 or len(df_saidas) == 0:
         return None
     
@@ -151,12 +154,14 @@ def create_monthly_cash_flow(df_entradas, df_saidas, projection_months=3):
         )
         fluxo = fluxo.fillna(0)
         
-        # Calcular saldo
+        # Calcular saldo do mês
         fluxo['Saldo'] = fluxo['Vl.rateado_entradas'] - fluxo['Vl.rateado_saidas']
         
         # Ordenar por data
         fluxo = fluxo.sort_values(['Ano', 'Mes'])
-        fluxo['Saldo_Acumulado'] = fluxo['Saldo'].cumsum()
+        
+        # Calcular saldo acumulado com saldo inicial
+        fluxo['Saldo_Acumulado'] = saldo_inicial + fluxo['Saldo'].cumsum()
         
         # Projeção para meses futuros
         if len(fluxo) > 0:
@@ -173,6 +178,7 @@ def create_monthly_cash_flow(df_entradas, df_saidas, projection_months=3):
             projection = []
             current_year = last_year
             current_month = last_month
+            current_saldo = last_saldo
             
             for i in range(1, projection_months + 1):
                 current_month += 1
@@ -185,7 +191,7 @@ def create_monthly_cash_flow(df_entradas, df_saidas, projection_months=3):
                 projected_entradas = avg_entradas
                 projected_saidas = avg_saidas
                 projected_saldo = projected_entradas - projected_saidas
-                last_saldo += projected_saldo
+                current_saldo += projected_saldo
                 
                 projection.append({
                     'Ano': current_year,
@@ -194,7 +200,7 @@ def create_monthly_cash_flow(df_entradas, df_saidas, projection_months=3):
                     'Vl.rateado_entradas': projected_entradas,
                     'Vl.rateado_saidas': projected_saidas,
                     'Saldo': projected_saldo,
-                    'Saldo_Acumulado': last_saldo,
+                    'Saldo_Acumulado': current_saldo,
                     'Projetado': True
                 })
             
@@ -207,6 +213,54 @@ def create_monthly_cash_flow(df_entradas, df_saidas, projection_months=3):
         return fluxo
     except Exception as e:
         st.error(f"Erro ao criar fluxo de caixa: {e}")
+        return None
+
+# Função para criar projeção diária
+def create_daily_projection(df_entradas, df_saidas, saldo_inicial, days_to_project=30):
+    if df_entradas is None or df_saidas is None:
+        return None
+    
+    try:
+        # Última data nos dados
+        last_date = max(df_entradas['Dt.pagto'].max(), df_saidas['Dt.pagto'].max())
+        
+        # Calcular padrões diários baseados nos dados históricos
+        df_entradas['Dia_Semana'] = df_entradas['Dt.pagto'].dt.dayofweek
+        df_saidas['Dia_Semana'] = df_saidas['Dt.pagto'].dt.dayofweek
+        
+        # Média por dia da semana
+        entradas_por_dia = df_entradas.groupby('Dia_Semana')['Vl.rateado'].mean()
+        saidas_por_dia = df_saidas.groupby('Dia_Semana')['Vl.rateado'].mean()
+        
+        # Criar projeção diária
+        projection_daily = []
+        current_date = last_date + timedelta(days=1)
+        current_saldo = saldo_inicial
+        
+        for i in range(days_to_project):
+            dia_semana = current_date.weekday()
+            
+            # Usar média do dia da semana ou média geral se não houver dados
+            entradas_dia = entradas_por_dia.get(dia_semana, df_entradas['Vl.rateado'].mean())
+            saidas_dia = saidas_por_dia.get(dia_semana, df_saidas['Vl.rateado'].mean())
+            
+            saldo_dia = entradas_dia - saidas_dia
+            current_saldo += saldo_dia
+            
+            projection_daily.append({
+                'Data': current_date,
+                'Dia_Semana': ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo'][dia_semana],
+                'Entradas_Projetadas': entradas_dia,
+                'Saidas_Projetadas': saidas_dia,
+                'Saldo_Dia': saldo_dia,
+                'Saldo_Acumulado': current_saldo
+            })
+            
+            current_date += timedelta(days=1)
+        
+        return pd.DataFrame(projection_daily)
+    except Exception as e:
+        st.error(f"Erro ao criar projeção diária: {e}")
         return None
 
 # Função para análise por empresa
@@ -238,7 +292,8 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Escolha o arquivo Excel", type=['xlsx', 'xls'])
     
     st.header("⚙️ Configurações")
-    projection_months = st.slider("Meses para projetar", 1, 6, 3)
+    projection_months = st.slider("Meses para projetar (mensal)", 1, 6, 3)
+    projection_days = st.slider("Dias para projetar (diário)", 7, 90, 30)
     
     st.header("📊 Filtros")
     
@@ -297,208 +352,284 @@ if df_entradas is not None and df_saidas is not None and len(df_entradas) > 0 an
         st.write(f"Total de saídas: {len(df_saidas_filtered)}")
         st.write(f"Período: {df_entradas_filtered['Dt.pagto'].min().date()} a {df_entradas_filtered['Dt.pagto'].max().date()}")
     
-    # Criar fluxo de caixa
-    fluxo = create_monthly_cash_flow(df_entradas_filtered, df_saidas_filtered, projection_months)
+    # Calcular saldo atual (considerando saldo inicial)
+    total_entradas = df_entradas_filtered['Vl.rateado'].sum()
+    total_saidas = df_saidas_filtered['Vl.rateado'].sum()
+    saldo_atual = SALDO_INICIAL + total_entradas - total_saidas
+    
+    # Criar fluxo de caixa mensal
+    fluxo = create_monthly_cash_flow(df_entradas_filtered, df_saidas_filtered, SALDO_INICIAL, projection_months)
+    
+    # Criar projeção diária
+    projecao_diaria = create_daily_projection(df_entradas_filtered, df_saidas_filtered, saldo_atual, projection_days)
     
     if fluxo is not None and len(fluxo) > 0:
         # KPI Cards
         st.subheader("📈 Indicadores Principais")
-        col1, col2, col3, col4 = st.columns(4)
-        
-        dados_reais = fluxo[~fluxo['Projetado']] if 'Projetado' in fluxo.columns else fluxo
+        col1, col2, col3, col4, col5 = st.columns(5)
         
         with col1:
-            total_entradas = dados_reais['Vl.rateado_entradas'].sum()
-            st.metric("Total Entradas (Realizado)", f"R$ {total_entradas:,.2f}")
+            st.metric("Saldo Inicial", f"R$ {SALDO_INICIAL:,.2f}")
         
         with col2:
-            total_saidas = dados_reais['Vl.rateado_saidas'].sum()
-            st.metric("Total Saídas (Realizado)", f"R$ {total_saidas:,.2f}")
+            st.metric("Total Entradas", f"R$ {total_entradas:,.2f}")
         
         with col3:
-            if len(dados_reais) > 0:
-                saldo_atual = dados_reais['Saldo_Acumulado'].iloc[-1]
-            else:
-                saldo_atual = 0
-            st.metric("Saldo Atual", f"R$ {saldo_atual:,.2f}")
+            st.metric("Total Saídas", f"R$ {total_saidas:,.2f}")
         
         with col4:
-            if 'Projetado' in fluxo.columns and len(fluxo[fluxo['Projetado']]) > 0:
-                saldo_projetado = fluxo[fluxo['Projetado']]['Saldo_Acumulado'].iloc[-1]
-                st.metric("Saldo Projetado", f"R$ {saldo_projetado:,.2f}")
+            st.metric("Saldo Atual", f"R$ {saldo_atual:,.2f}")
+        
+        with col5:
+            if projecao_diaria is not None and len(projecao_diaria) > 0:
+                saldo_projetado = projecao_diaria['Saldo_Acumulado'].iloc[-1]
+                st.metric("Saldo Projetado (30d)", f"R$ {saldo_projetado:,.2f}")
             else:
                 st.metric("Saldo Projetado", "R$ 0,00")
         
         st.markdown("---")
         
-        # Gráfico de Fluxo de Caixa
-        st.subheader("📊 Evolução do Fluxo de Caixa")
+        # Tabs para diferentes visualizações
+        tab1, tab2, tab3, tab4 = st.tabs(["📊 Fluxo Mensal", "📈 Projeção Diária", "🏢 Análise por Empresa", "🔄 Últimas Transações"])
         
-        fig = go.Figure()
-        
-        # Barras de entradas e saídas
-        fig.add_trace(go.Bar(
-            x=fluxo['Mês/Ano'],
-            y=fluxo['Vl.rateado_entradas'],
-            name='Entradas',
-            marker_color='green',
-            opacity=0.7
-        ))
-        
-        fig.add_trace(go.Bar(
-            x=fluxo['Mês/Ano'],
-            y=-fluxo['Vl.rateado_saidas'],
-            name='Saídas',
-            marker_color='red',
-            opacity=0.7
-        ))
-        
-        # Linha de saldo acumulado
-        fig.add_trace(go.Scatter(
-            x=fluxo['Mês/Ano'],
-            y=fluxo['Saldo_Acumulado'],
-            name='Saldo Acumulado',
-            marker_color='blue',
-            yaxis='y2',
-            line=dict(width=3)
-        ))
-        
-        # Adicionar anotação para separar real do projetado (substituindo add_vline problemático)
-        if 'Projetado' in fluxo.columns and len(fluxo[~fluxo['Projetado']]) > 0:
-            last_real_index = len(fluxo[~fluxo['Projetado']]) - 1
-            last_real_x = fluxo[~fluxo['Projetado']].iloc[-1]['Mês/Ano']
+        with tab1:
+            # Gráfico de Fluxo de Caixa Mensal
+            st.subheader("Evolução do Fluxo de Caixa Mensal")
             
-            # Adicionar uma linha vertical como shape
-            fig.add_shape(
-                type="line",
-                x0=last_real_x,
-                y0=0,
-                x1=last_real_x,
-                y1=1,
-                yref="paper",
-                line=dict(color="orange", width=2, dash="dash"),
+            fig = go.Figure()
+            
+            # Barras de entradas e saídas
+            fig.add_trace(go.Bar(
+                x=fluxo['Mês/Ano'],
+                y=fluxo['Vl.rateado_entradas'],
+                name='Entradas',
+                marker_color='green',
+                opacity=0.7
+            ))
+            
+            fig.add_trace(go.Bar(
+                x=fluxo['Mês/Ano'],
+                y=-fluxo['Vl.rateado_saidas'],
+                name='Saídas',
+                marker_color='red',
+                opacity=0.7
+            ))
+            
+            # Linha de saldo acumulado
+            fig.add_trace(go.Scatter(
+                x=fluxo['Mês/Ano'],
+                y=fluxo['Saldo_Acumulado'],
+                name='Saldo Acumulado',
+                marker_color='blue',
+                yaxis='y2',
+                line=dict(width=3)
+            ))
+            
+            # Adicionar linha para saldo inicial
+            fig.add_hline(y=SALDO_INICIAL, line_dash="dot", line_color="gray",
+                         annotation_text="Saldo Inicial", annotation_position="bottom left")
+            
+            # Adicionar anotação para separar real do projetado
+            if 'Projetado' in fluxo.columns and len(fluxo[~fluxo['Projetado']]) > 0:
+                last_real_x = fluxo[~fluxo['Projetado']].iloc[-1]['Mês/Ano']
+                
+                fig.add_shape(
+                    type="line",
+                    x0=last_real_x,
+                    y0=0,
+                    x1=last_real_x,
+                    y1=1,
+                    yref="paper",
+                    line=dict(color="orange", width=2, dash="dash"),
+                )
+                
+                fig.add_annotation(
+                    x=last_real_x,
+                    y=1,
+                    yref="paper",
+                    text="Início da Projeção",
+                    showarrow=True,
+                    arrowhead=2,
+                    ax=40,
+                    ay=-30,
+                    font=dict(size=12, color="orange")
+                )
+            
+            fig.update_layout(
+                barmode='group',
+                height=500,
+                xaxis_title='Mês/Ano',
+                yaxis_title='Valor (R$)',
+                yaxis2=dict(
+                    title='Saldo Acumulado (R$)',
+                    overlaying='y',
+                    side='right'
+                ),
+                legend=dict(x=0, y=1.1, orientation='h'),
+                hovermode='x unified'
             )
             
-            # Adicionar anotação
-            fig.add_annotation(
-                x=last_real_x,
-                y=1,
-                yref="paper",
-                text="Início da Projeção",
-                showarrow=True,
-                arrowhead=2,
-                ax=40,
-                ay=-30,
-                font=dict(size=12, color="orange")
-            )
-        
-        fig.update_layout(
-            barmode='group',
-            title='Fluxo de Caixa Mensal',
-            xaxis_title='Mês/Ano',
-            yaxis_title='Valor (R$)',
-            yaxis2=dict(
-                title='Saldo Acumulado (R$)',
-                overlaying='y',
-                side='right'
-            ),
-            height=500,
-            legend=dict(x=0, y=1.1, orientation='h'),
-            hovermode='x unified'
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Tabela de Fluxo de Caixa
-        st.subheader("📋 Detalhamento Mensal")
-        
-        fluxo_display = fluxo[['Mês/Ano', 'Vl.rateado_entradas', 'Vl.rateado_saidas', 'Saldo', 'Saldo_Acumulado']].copy()
-        fluxo_display.columns = ['Mês/Ano', 'Entradas', 'Saídas', 'Saldo', 'Saldo Acumulado']
-        
-        # Adicionar coluna de status se existir
-        if 'Projetado' in fluxo.columns:
-            fluxo_display['Status'] = fluxo['Projetado'].apply(lambda x: '📅 Projetado' if x else '✅ Realizado')
-        
-        # Formatação
-        for col in ['Entradas', 'Saídas', 'Saldo', 'Saldo Acumulado']:
-            fluxo_display[col] = fluxo_display[col].apply(lambda x: f"R$ {x:,.2f}")
-        
-        st.dataframe(fluxo_display, use_container_width=True, hide_index=True)
-        
-        st.markdown("---")
-        
-        # Análise por Empresa
-        st.subheader("🏢 Análise por Empresa")
-        
-        empresas_df = analyze_by_company(df_entradas_filtered, df_saidas_filtered)
-        
-        if empresas_df is not None and len(empresas_df) > 0:
-            # Gráfico de barras para saldo por empresa
-            empresas_top = empresas_df.nlargest(15, 'Saldo')
+            st.plotly_chart(fig, use_container_width=True)
             
-            fig_empresas = px.bar(
-                empresas_top,
-                x='Empresa',
-                y='Saldo',
-                title='Saldo por Empresa (Top 15)',
-                color='Saldo',
-                color_continuous_scale=['red', 'yellow', 'green']
-            )
-            fig_empresas.update_layout(xaxis_tickangle=-45)
-            st.plotly_chart(fig_empresas, use_container_width=True)
+            # Tabela de Fluxo de Caixa Mensal
+            st.subheader("Detalhamento Mensal")
             
-            # Gráfico de pizza para entradas por empresa
+            fluxo_display = fluxo[['Mês/Ano', 'Vl.rateado_entradas', 'Vl.rateado_saidas', 'Saldo', 'Saldo_Acumulado']].copy()
+            fluxo_display.columns = ['Mês/Ano', 'Entradas', 'Saídas', 'Saldo', 'Saldo Acumulado']
+            
+            if 'Projetado' in fluxo.columns:
+                fluxo_display['Status'] = fluxo['Projetado'].apply(lambda x: '📅 Projetado' if x else '✅ Realizado')
+            
+            for col in ['Entradas', 'Saídas', 'Saldo', 'Saldo Acumulado']:
+                fluxo_display[col] = fluxo_display[col].apply(lambda x: f"R$ {x:,.2f}")
+            
+            st.dataframe(fluxo_display, use_container_width=True, hide_index=True)
+        
+        with tab2:
+            if projecao_diaria is not None and len(projecao_diaria) > 0:
+                st.subheader(f"Projeção Diária para os Próximos {projection_days} Dias")
+                
+                # Gráfico de projeção diária
+                fig_daily = go.Figure()
+                
+                fig_daily.add_trace(go.Scatter(
+                    x=projecao_diaria['Data'],
+                    y=projecao_diaria['Saldo_Acumulado'],
+                    name='Saldo Projetado',
+                    mode='lines+markers',
+                    line=dict(color='blue', width=2),
+                    marker=dict(size=4)
+                ))
+                
+                # Adicionar linha do saldo atual
+                fig_daily.add_hline(y=saldo_atual, line_dash="dot", line_color="green",
+                                   annotation_text="Saldo Atual", annotation_position="bottom left")
+                
+                fig_daily.update_layout(
+                    title='Evolução do Saldo - Projeção Diária',
+                    xaxis_title='Data',
+                    yaxis_title='Saldo (R$)',
+                    height=400,
+                    hovermode='x unified'
+                )
+                
+                st.plotly_chart(fig_daily, use_container_width=True)
+                
+                # Gráfico de barras para entradas e saídas projetadas por dia
+                fig_daily_bars = go.Figure()
+                
+                fig_daily_bars.add_trace(go.Bar(
+                    x=projecao_diaria['Data'],
+                    y=projecao_diaria['Entradas_Projetadas'],
+                    name='Entradas Projetadas',
+                    marker_color='green',
+                    opacity=0.7
+                ))
+                
+                fig_daily_bars.add_trace(go.Bar(
+                    x=projecao_diaria['Data'],
+                    y=-projecao_diaria['Saidas_Projetadas'],
+                    name='Saídas Projetadas',
+                    marker_color='red',
+                    opacity=0.7
+                ))
+                
+                fig_daily_bars.update_layout(
+                    title='Entradas e Saídas Projetadas por Dia',
+                    xaxis_title='Data',
+                    yaxis_title='Valor (R$)',
+                    height=400,
+                    barmode='group',
+                    hovermode='x unified'
+                )
+                
+                st.plotly_chart(fig_daily_bars, use_container_width=True)
+                
+                # Tabela de projeção diária
+                st.subheader("Detalhamento da Projeção Diária")
+                
+                daily_display = projecao_diaria.copy()
+                daily_display['Data'] = daily_display['Data'].dt.strftime('%d/%m/%Y')
+                
+                for col in ['Entradas_Projetadas', 'Saidas_Projetadas', 'Saldo_Dia', 'Saldo_Acumulado']:
+                    daily_display[col] = daily_display[col].apply(lambda x: f"R$ {x:,.2f}")
+                
+                st.dataframe(daily_display, use_container_width=True, hide_index=True)
+            else:
+                st.info("Não foi possível gerar a projeção diária.")
+        
+        with tab3:
+            st.subheader("Análise por Empresa")
+            
+            empresas_df = analyze_by_company(df_entradas_filtered, df_saidas_filtered)
+            
+            if empresas_df is not None and len(empresas_df) > 0:
+                # Gráfico de barras para saldo por empresa
+                empresas_top = empresas_df.nlargest(15, 'Saldo')
+                
+                fig_empresas = px.bar(
+                    empresas_top,
+                    x='Empresa',
+                    y='Saldo',
+                    title='Saldo por Empresa (Top 15)',
+                    color='Saldo',
+                    color_continuous_scale=['red', 'yellow', 'green']
+                )
+                fig_empresas.update_layout(xaxis_tickangle=-45)
+                st.plotly_chart(fig_empresas, use_container_width=True)
+                
+                # Gráfico de pizza para entradas por empresa
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    empresas_top_entradas = empresas_df.nlargest(10, 'Total_Entradas')
+                    fig_pie_entradas = px.pie(
+                        empresas_top_entradas,
+                        values='Total_Entradas',
+                        names='Empresa',
+                        title='Top 10 Empresas - Entradas',
+                        hole=0.4
+                    )
+                    st.plotly_chart(fig_pie_entradas, use_container_width=True)
+                
+                with col2:
+                    empresas_top_saidas = empresas_df.nlargest(10, 'Total_Saidas')
+                    fig_pie_saidas = px.pie(
+                        empresas_top_saidas,
+                        values='Total_Saidas',
+                        names='Empresa',
+                        title='Top 10 Empresas - Saídas',
+                        hole=0.4
+                    )
+                    st.plotly_chart(fig_pie_saidas, use_container_width=True)
+                
+                # Tabela de empresas
+                with st.expander("Ver todas as empresas"):
+                    empresas_display = empresas_df.copy()
+                    empresas_display['Total_Entradas'] = empresas_display['Total_Entradas'].apply(lambda x: f"R$ {x:,.2f}")
+                    empresas_display['Total_Saidas'] = empresas_display['Total_Saidas'].apply(lambda x: f"R$ {x:,.2f}")
+                    empresas_display['Saldo'] = empresas_display['Saldo'].apply(lambda x: f"R$ {x:,.2f}")
+                    
+                    st.dataframe(empresas_display, use_container_width=True, hide_index=True)
+        
+        with tab4:
+            st.subheader("Últimas Transações")
+            
             col1, col2 = st.columns(2)
             
             with col1:
-                empresas_top_entradas = empresas_df.nlargest(10, 'Total_Entradas')
-                fig_pie_entradas = px.pie(
-                    empresas_top_entradas,
-                    values='Total_Entradas',
-                    names='Empresa',
-                    title='Top 10 Empresas - Entradas',
-                    hole=0.4
-                )
-                st.plotly_chart(fig_pie_entradas, use_container_width=True)
+                st.write("**Últimas Entradas**")
+                ultimas_entradas = df_entradas_filtered.sort_values('Dt.pagto', ascending=False).head(20)
+                ultimas_entradas['Dt.pagto'] = ultimas_entradas['Dt.pagto'].dt.strftime('%d/%m/%Y')
+                ultimas_entradas['Vl.rateado'] = ultimas_entradas['Vl.rateado'].apply(lambda x: f"R$ {x:,.2f}")
+                st.dataframe(ultimas_entradas, use_container_width=True, hide_index=True)
             
             with col2:
-                empresas_top_saidas = empresas_df.nlargest(10, 'Total_Saidas')
-                fig_pie_saidas = px.pie(
-                    empresas_top_saidas,
-                    values='Total_Saidas',
-                    names='Empresa',
-                    title='Top 10 Empresas - Saídas',
-                    hole=0.4
-                )
-                st.plotly_chart(fig_pie_saidas, use_container_width=True)
-            
-            # Tabela de empresas
-            with st.expander("Ver todas as empresas"):
-                empresas_display = empresas_df.copy()
-                empresas_display['Total_Entradas'] = empresas_display['Total_Entradas'].apply(lambda x: f"R$ {x:,.2f}")
-                empresas_display['Total_Saidas'] = empresas_display['Total_Saidas'].apply(lambda x: f"R$ {x:,.2f}")
-                empresas_display['Saldo'] = empresas_display['Saldo'].apply(lambda x: f"R$ {x:,.2f}")
-                
-                st.dataframe(empresas_display, use_container_width=True, hide_index=True)
-        
-        st.markdown("---")
-        
-        # Últimas transações
-        st.subheader("🔄 Últimas Transações")
-        
-        tab1, tab2 = st.tabs(["Últimas Entradas", "Últimas Saídas"])
-        
-        with tab1:
-            ultimas_entradas = df_entradas_filtered.sort_values('Dt.pagto', ascending=False).head(20)
-            ultimas_entradas['Dt.pagto'] = ultimas_entradas['Dt.pagto'].dt.strftime('%d/%m/%Y')
-            ultimas_entradas['Vl.rateado'] = ultimas_entradas['Vl.rateado'].apply(lambda x: f"R$ {x:,.2f}")
-            st.dataframe(ultimas_entradas, use_container_width=True, hide_index=True)
-        
-        with tab2:
-            ultimas_saidas = df_saidas_filtered.sort_values('Dt.pagto', ascending=False).head(20)
-            ultimas_saidas['Dt.pagto'] = ultimas_saidas['Dt.pagto'].dt.strftime('%d/%m/%Y')
-            ultimas_saidas['Vl.rateado'] = ultimas_saidas['Vl.rateado'].apply(lambda x: f"R$ {x:,.2f}")
-            st.dataframe(ultimas_saidas, use_container_width=True, hide_index=True)
+                st.write("**Últimas Saídas**")
+                ultimas_saidas = df_saidas_filtered.sort_values('Dt.pagto', ascending=False).head(20)
+                ultimas_saidas['Dt.pagto'] = ultimas_saidas['Dt.pagto'].dt.strftime('%d/%m/%Y')
+                ultimas_saidas['Vl.rateado'] = ultimas_saidas['Vl.rateado'].apply(lambda x: f"R$ {x:,.2f}")
+                st.dataframe(ultimas_saidas, use_container_width=True, hide_index=True)
         
         # Botão para download dos dados processados
         st.markdown("---")
@@ -507,6 +638,8 @@ if df_entradas is not None and df_saidas is not None and len(df_entradas) > 0 an
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             fluxo.to_excel(writer, sheet_name='Fluxo_Mensal', index=False)
+            if projecao_diaria is not None:
+                projecao_diaria.to_excel(writer, sheet_name='Projecao_Diaria', index=False)
             if empresas_df is not None:
                 empresas_df.to_excel(writer, sheet_name='Analise_Empresas', index=False)
             df_entradas_filtered.head(1000).to_excel(writer, sheet_name='Entradas', index=False)
@@ -537,9 +670,11 @@ else:
         - Vl.rateado (número) - Valor da transação
         - Dt.pagto (data) - Data do pagamento
         
+        **Saldo Inicial:** R$ 6.355.160,80 (configurado no sistema)
+        
         As datas podem estar em diversos formatos (ex: 2025-08-08, 08/08/2025, etc.)
         """)
 
 # Footer
 st.markdown("---")
-st.markdown("Desenvolvido para gestão de fluxo de caixa | Atualize mensalmente para melhores resultados")
+st.markdown("Desenvolvido para gestão de fluxo de caixa | Saldo inicial: R$ 6.355.160,80")
