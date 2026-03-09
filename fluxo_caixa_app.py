@@ -220,7 +220,7 @@ def create_monthly_cash_flow(df_entradas, df_saidas, saldo_inicial, projection_m
         return None
 
 # Função para criar projeção diária (apenas dias úteis)
-def create_daily_projection(df_entradas, df_saidas, saldo_inicial, days_to_project=30):
+def create_daily_projection(df_entradas, df_saidas, saldo_atual, days_to_project=30):
     if df_entradas is None or df_saidas is None:
         return None
     
@@ -248,9 +248,6 @@ def create_daily_projection(df_entradas, df_saidas, saldo_inicial, days_to_proje
         
         # Última data nos dados
         last_date = max(df_entradas['Dt.pagto'].max(), df_saidas['Dt.pagto'].max())
-        
-        # Calcular o saldo atual (já considera o saldo inicial)
-        saldo_atual = saldo_inicial
         
         # Criar projeção diária (apenas dias úteis)
         projection_daily = []
@@ -712,4 +709,15 @@ else:
         - Dt.pagto (data) - Data do pagamento
         
         **Saídas:**
-        - Empresa (texto) - Nome
+        - Empresa (texto) - Nome da empresa
+        - Vl.rateado (número) - Valor da transação
+        - Dt.pagto (data) - Data do pagamento
+        
+        **Saldo Inicial:** R$ 6.355.160,80 (configurado no sistema)
+        
+        As datas podem estar em diversos formatos (ex: 2025-08-08, 08/08/2025, etc.)
+        """)
+
+# Footer
+st.markdown("---")
+st.markdown("Desenvolvido para gestão de fluxo de caixa | Saldo inicial: R$ 6.355.160,80")
