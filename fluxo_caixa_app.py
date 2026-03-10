@@ -76,7 +76,7 @@ def is_business_day(date):
     
     return date.date() not in holidays
 
-# Função para carregar dados
+# Função para carregar dados - CORRIGIDA COMPLETAMENTE
 @st.cache_data
 def load_data(uploaded_file):
     try:
@@ -84,21 +84,88 @@ def load_data(uploaded_file):
             # Tentar ler as abas com diferentes nomes possíveis
             try:
                 df_entradas = pd.read_excel(uploaded_file, sheet_name='Entradas')
+                st.success("✅ Aba 'Entradas' carregada com sucesso!")
             except:
                 try:
                     df_entradas = pd.read_excel(uploaded_file, sheet_name='entradas')
+                    st.success("✅ Aba 'entradas' carregada com sucesso!")
                 except:
-                    st.error("Não foi possível encontrar a aba 'Entradas' no arquivo")
+                    st.error("❌ Não foi possível encontrar a aba 'Entradas' no arquivo")
                     return None, None
             
             try:
                 df_saidas = pd.read_excel(uploaded_file, sheet_name='Saídas')
+                st.success("✅ Aba 'Saídas' carregada com sucesso!")
             except:
                 try:
                     df_saidas = pd.read_excel(uploaded_file, sheet_name='saidas')
+                    st.success("✅ Aba 'saidas' carregada com sucesso!")
                 except:
-                    st.error("Não foi possível encontrar a aba 'Saídas' no arquivo")
+                    st.error("❌ Não foi possível encontrar a aba 'Saídas' no arquivo")
                     return None, None
+            
+            # Identificar as colunas corretas
+            def find_column(df, possible_names):
+                df_cols_lower = {col.lower().strip(): col for col in df.columns}
+                for name in possible_names:
+                    if name.lower().strip() in df_cols_lower:
+                        return df_cols_lower[name.lower().strip()]
+                return None
+            
+            # Para Entradas
+            empresa_col_ent = find_column(df_entradas, ['Empresa', 'EMPRESA', 'empresa'])
+            valor_col_ent = find_column(df_entradas, ['Vl.rateado', 'VL.RATEADO', 'vl.rateado', 'Valor', 'VALOR', 'valor'])
+            data_col_ent = find_column(df_entradas, ['Dt.pagto', 'DT.PAGTO', 'dt.pagto', 'Data', 'DATA', 'data'])
+            
+            # Para Saídas
+            empresa_col_sai = find_column(df_saidas, ['Empresa', 'EMPRESA', 'empresa'])
+            valor_col_sai = find_column(df_saidas, ['Vl.rateado', 'VL.RATEADO', 'vl.rateado', 'Valor', 'VALOR', 'valor'])
+            data_col_sai = find_column(df_saidas, ['Dt.pagto', 'DT.PAGTO', 'dt.pagto', 'Data', 'DATA', 'data'])
+            
+            # Verificar se encontrou todas as colunas
+            if None in [empresa_col_ent, valor_col_ent, data_col_ent]:
+                st.error("❌ Colunas necessárias não encontradas na aba Entradas")
+                st.write("Colunas encontradas:", list(df_entradas.columns))
+                return None, None
+            
+            if None in [empresa_col_sai, valor_col_sai, data_col_sai]:
+                st.error("❌ Colunas necessárias não encontradas na aba Saídas")
+                st.write("Colunas encontradas:", list(df_saidas.columns))
+                return None, None
+            
+            # Renomear colunas para nomes padronizados
+            df_entradas = df_entradas.rename(columns={
+                empresa_col_ent: 'Empresa',
+                valor_col_ent: 'Vl.rateado',
+                data_col_ent: 'Dt.pagto'
+            })
+            
+            df_saidas = df_saidas.rename(columns={
+                empresa_col_sai: 'Empresa',
+                valor_col_sai: 'Vl.rateado',
+                data_col_sai: 'Dt.pagto'
+            })
+            
+            # Processar valores
+            df_entradas['Vl.rateado'] = df_entradas['Vl.rateado'].apply(clean_currency)
+            df_saidas['Vl.rateado'] = df_saidas['Vl.rateado'].apply(clean_currency)
+            
+            # Processar datas
+            df_entradas['Dt.pagto'] = pd.to_datetime(df_entradas['Dt.pagto'], errors='coerce')
+            df_saidas['Dt.pagto'] = pd.to_datetime(df_saidas['Dt.pagto'], errors='coerce')
+            
+            # Remover valores nulos
+            df_entradas = df_entradas.dropna(subset=['Dt.pagto', 'Vl.rateado'])
+            df_saidas = df_saidas.dropna(subset=['Dt.pagto', 'Vl.rateado'])
+            
+            # Filtrar valores zero ou muito pequenos
+            df_entradas = df_entradas[abs(df_entradas['Vl.rateado']) > 0.01]
+            df_saidas = df_saidas[abs(df_saidas['Vl.rateado']) > 0.01]
+            
+            st.success(f"✅ Dados carregados: {len(df_entradas)} entradas e {len(df_saidas)} saídas")
+            
+            return df_entradas, df_saidas
+            
         else:
             # Dados de exemplo para teste
             st.info("📢 Nenhum arquivo carregado. Mostrando dados de exemplo...")
@@ -122,13 +189,12 @@ def load_data(uploaded_file):
             }
             df_saidas = pd.DataFrame(saidas_data)
             
+            st.success(f"✅ Dados de exemplo gerados: {len(df_entradas)} entradas e {len(df_saidas)} saídas")
+            
             return df_entradas, df_saidas
-        
-        # Restante do código para quando tem arquivo...
-        # (manter o mesmo código anterior para processamento de arquivos)
-        
+            
     except Exception as e:
-        st.error(f"Erro ao carregar arquivo: {str(e)}")
+        st.error(f"❌ Erro ao carregar arquivo: {str(e)}")
         return None, None
 
 # Sidebar para upload e controles
@@ -146,7 +212,7 @@ df_entradas, df_saidas = load_data(uploaded_file)
 # Main content - SOMENTE EXECUTA SE OS DADOS EXISTIREM
 if df_entradas is not None and df_saidas is not None and len(df_entradas) > 0 and len(df_saidas) > 0:
     
-    # Filtros do sidebar (agora dentro do contexto dos dados)
+    # Filtros do sidebar
     with st.sidebar:
         st.header("📊 Filtros")
         
@@ -205,7 +271,6 @@ if df_entradas is not None and df_saidas is not None and len(df_entradas) > 0 an
     saldo_atual = SALDO_INICIAL + total_entradas - abs(total_saidas)
     
     # Criar fluxo de caixa mensal
-    # Versão simplificada para teste
     df_entradas_filtered['Ano'] = df_entradas_filtered['Dt.pagto'].dt.year
     df_entradas_filtered['Mes'] = df_entradas_filtered['Dt.pagto'].dt.month
     df_entradas_filtered['Mês/Ano'] = df_entradas_filtered['Ano'].astype(str) + '-' + df_entradas_filtered['Mes'].astype(str).str.zfill(2)
@@ -257,7 +322,7 @@ if df_entradas is not None and df_saidas is not None and len(df_entradas) > 0 an
     
     st.markdown("---")
     
-    # Tabs para diferentes visualizações - DEFINIDAS AQUI, DENTRO DO BLOCO IF
+    # Tabs para diferentes visualizações
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Fluxo Mensal", "📈 Projeção Diária", "🏢 Análise por Empresa", "🔄 Últimas Transações"])
     
     with tab1:
@@ -337,11 +402,17 @@ if df_entradas is not None and df_saidas is not None and len(df_entradas) > 0 an
         
         with col1:
             st.write("**Últimas Entradas**")
-            st.dataframe(df_entradas_filtered[['Empresa', 'Dt.pagto', 'Vl.rateado']].head(10), hide_index=True)
+            ultimas_entradas = df_entradas_filtered.sort_values('Dt.pagto', ascending=False).head(10)
+            ultimas_entradas['Dt.pagto'] = ultimas_entradas['Dt.pagto'].dt.strftime('%d/%m/%Y')
+            ultimas_entradas['Vl.rateado'] = ultimas_entradas['Vl.rateado'].apply(lambda x: f"R$ {x:,.2f}")
+            st.dataframe(ultimas_entradas[['Empresa', 'Dt.pagto', 'Vl.rateado']], use_container_width=True, hide_index=True)
         
         with col2:
             st.write("**Últimas Saídas**")
-            st.dataframe(df_saidas_filtered[['Empresa', 'Dt.pagto', 'Vl.rateado']].head(10), hide_index=True)
+            ultimas_saidas = df_saidas_filtered.sort_values('Dt.pagto', ascending=False).head(10)
+            ultimas_saidas['Dt.pagto'] = ultimas_saidas['Dt.pagto'].dt.strftime('%d/%m/%Y')
+            ultimas_saidas['Vl.rateado'] = ultimas_saidas['Vl.rateado'].apply(lambda x: f"R$ {abs(x):,.2f}")
+            st.dataframe(ultimas_saidas[['Empresa', 'Dt.pagto', 'Vl.rateado']], use_container_width=True, hide_index=True)
 
 else:
     # Mensagem quando não há dados
@@ -352,14 +423,18 @@ else:
         O arquivo deve conter duas abas:
         
         **Entradas:**
-        - Empresa (texto)
-        - Vl.rateado (número)
-        - Dt.pagto (data)
+        - Colunas esperadas: Empresa, Vl.rateado, Dt.pagto
+        - A ordem das colunas não importa
+        - Os nomes podem ser em maiúsculo, minúsculo ou com acentos
         
         **Saídas:**
-        - Empresa (texto)
-        - Vl.rateado (número)
-        - Dt.pagto (data)
+        - Colunas esperadas: Empresa, Vl.rateado, Dt.pagto
+        
+        **Exemplo de dados:**
+        | Empresa | Vl.rateado | Dt.pagto |
+        |---------|------------|----------|
+        | Empresa A | R$ 1.500,00 | 01/01/2025 |
+        | Empresa B | R$ 2.300,50 | 02/01/2025 |
         
         **Saldo Inicial:** R$ 6.355.160,80
         """)
