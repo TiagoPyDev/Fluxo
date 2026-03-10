@@ -164,25 +164,26 @@ def create_monthly_cash_flow(df_entradas, df_saidas, saldo_inicial, projection_m
         # Ordenar por data
         fluxo = fluxo.sort_values(['Ano', 'Mes'])
         
-        # Calcular saldo acumulado com saldo inicial
+        # CORREÇÃO: Calcular saldo acumulado com saldo inicial
+        # O primeiro mês começa com saldo_inicial + saldo do primeiro mês
         fluxo['Saldo_Acumulado'] = saldo_inicial + fluxo['Saldo'].cumsum()
         
         # Projeção para meses futuros
         if len(fluxo) > 0:
             last_year = fluxo['Ano'].iloc[-1]
             last_month = fluxo['Mes'].iloc[-1]
-            last_saldo = fluxo['Saldo_Acumulado'].iloc[-1]
+            last_saldo = fluxo['Saldo_Acumulado'].iloc[-1]  # Saldo acumulado até o último mês real
             
             # Calcular média dos últimos 3 meses para projeção
-            last_3_months = fluxo.tail(min(3, len(fluxo)))
-            avg_entradas = last_3_months['Vl.rateado_entradas'].mean()
-            avg_saidas = last_3_months['Vl.rateado_saidas'].mean()
+            ultimos_meses = fluxo.tail(min(3, len(fluxo)))
+            avg_entradas = ultimos_meses['Vl.rateado_entradas'].mean()
+            avg_saidas = ultimos_meses['Vl.rateado_saidas'].mean()
             
             # Criar meses projetados
             projection = []
             current_year = last_year
             current_month = last_month
-            current_saldo = last_saldo
+            current_saldo = last_saldo  # Começa com o saldo do último mês real
             
             for i in range(1, projection_months + 1):
                 current_month += 1
@@ -252,7 +253,7 @@ def create_daily_projection(df_entradas, df_saidas, saldo_atual, days_to_project
         # Criar projeção diária (apenas dias úteis)
         projection_daily = []
         current_date = last_date + timedelta(days=1)
-        current_saldo = saldo_atual
+        current_saldo = saldo_atual  # Começa com o saldo atual
         days_added = 0
         
         dias_semana = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo']
@@ -421,6 +422,18 @@ if df_entradas is not None and df_saidas is not None and len(df_entradas) > 0 an
             st.subheader("Evolução do Fluxo de Caixa Mensal")
             
             fig = go.Figure()
+            
+            # Adicionar ponto do saldo inicial no gráfico
+            primeiro_mes = fluxo['Mês/Ano'].iloc[0] if len(fluxo) > 0 else ''
+            fig.add_trace(go.Scatter(
+                x=[primeiro_mes],
+                y=[SALDO_INICIAL],
+                name='Saldo Inicial',
+                marker_color='purple',
+                mode='markers',
+                marker=dict(size=10, symbol='diamond'),
+                showlegend=True
+            ))
             
             # Barras de entradas e saídas
             fig.add_trace(go.Bar(
