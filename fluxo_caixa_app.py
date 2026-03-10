@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 import calendar
 import io
 import re
-from workalendar.america import Brazil  # Para feriados brasileiros
 
 # Configuração da página
 st.set_page_config(
@@ -39,21 +38,46 @@ def clean_currency(value):
             return 0
     return 0
 
-# Função para verificar se é dia útil (considerando feriados)
-def is_business_day(date, holidays):
+# Função para verificar se é dia útil (considerando feriados nacionais brasileiros)
+def is_business_day(date):
+    # Verificar se é fim de semana
     if date.weekday() >= 5:  # Sábado (5) ou Domingo (6)
         return False
-    if date in holidays:  # Feriado
-        return False
-    return True
-
-# Função para carregar feriados brasileiros
-def get_brazil_holidays(year):
-    cal = Brazil()
-    holidays = cal.holidays(year)
-    # Adicionar também anos seguintes para projeção
-    holidays_next = cal.holidays(year + 1)
-    return [date for date, name in holidays + holidays_next]
+    
+    # Lista de feriados nacionais brasileiros (principais)
+    year = date.year
+    holidays = [
+        # Feriados fixos
+        datetime(year, 1, 1).date(),   # Confraternização Universal
+        datetime(year, 4, 21).date(),  # Tiradentes
+        datetime(year, 5, 1).date(),   # Dia do Trabalho
+        datetime(year, 9, 7).date(),   # Independência
+        datetime(year, 10, 12).date(), # Nossa Srª Aparecida
+        datetime(year, 11, 2).date(),  # Finados
+        datetime(year, 11, 15).date(), # Proclamação da República
+        datetime(year, 12, 25).date(), # Natal
+        
+        # Feriados móveis (aproximados - calcular corretamente seria complexo)
+        # Vamos considerar apenas os fixos para simplificar
+    ]
+    
+    # Adicionar Carnaval e Sexta Santa (aproximados - anos específicos)
+    # Para 2025
+    if year == 2025:
+        holidays.extend([
+            datetime(2025, 3, 4).date(),  # Carnaval
+            datetime(2025, 3, 5).date(),  # Carnaval
+            datetime(2025, 4, 18).date(), # Sexta Santa
+        ])
+    # Para 2026
+    elif year == 2026:
+        holidays.extend([
+            datetime(2026, 2, 17).date(), # Carnaval
+            datetime(2026, 2, 18).date(), # Carnaval
+            datetime(2026, 4, 3).date(),  # Sexta Santa
+        ])
+    
+    return date.date() not in holidays
 
 # Função para carregar dados
 @st.cache_data
@@ -241,69 +265,46 @@ def create_monthly_cash_flow(df_entradas, df_saidas, saldo_inicial, projection_m
         return None
 
 # Função para criar projeção diária baseada em dados históricos
-def create_daily_projection(df_entradas, df_saidas, saldo_atual, days_to_project=30):
+def create_daily_projection(df_entradas, df_saidas, saldo_atual, days_to_project=60):
     if df_entradas is None or df_saidas is None or len(df_entradas) == 0 or len(df_saidas) == 0:
         return None
     
     try:
-        # Obter ano atual para feriados
-        current_year = datetime.now().year
-        holidays = get_brazil_holidays(current_year)
-        
         # Adicionar dia da semana aos dados históricos
         df_entradas['Dia_Semana'] = df_entradas['Dt.pagto'].dt.dayofweek
-        df_entradas['Dia_Util'] = df_entradas['Dia_Semana'].apply(lambda x: x < 5)
-        df_entradas['Hora'] = df_entradas['Dt.pagto'].dt.hour
+        df_entradas['Dia_Util'] = df_entradas.apply(lambda row: is_business_day(row['Dt.pagto']), axis=1)
         
         df_saidas['Dia_Semana'] = df_saidas['Dt.pagto'].dt.dayofweek
-        df_saidas['Dia_Util'] = df_saidas['Dia_Semana'].apply(lambda x: x < 5)
-        df_saidas['Hora'] = df_saidas['Dt.pagto'].dt.hour
+        df_saidas['Dia_Util'] = df_saidas.apply(lambda row: is_business_day(row['Dt.pagto']), axis=1)
         
-        # Analisar padrões por dia da semana (considerando apenas dias úteis históricos)
-        dias_semana_uteis = range(5)  # 0-4 (segunda a sexta)
-        
-        # Calcular estatísticas por dia da semana
+        # Calcular estatísticas por dia da semana (apenas dias úteis históricos)
         entradas_por_dia = {}
         saidas_por_dia = {}
-        dias_com_dados = []
         
-        for dia in dias_semana_uteis:
-            # Filtrar apenas dias úteis históricos (não considerar feriados ainda)
-            entradas_dia = df_entradas[df_entradas['Dia_Semana'] == dia]['Vl.rateado']
-            saidas_dia = df_saidas[df_saidas['Dia_Semana'] == dia]['Vl.rateado']
+        for dia in range(5):  # 0-4 (segunda a sexta)
+            # Filtrar apenas dias úteis históricos
+            entradas_dia = df_entradas[(df_entradas['Dia_Semana'] == dia) & (df_entradas['Dia_Util'])]['Vl.rateado']
+            saidas_dia = df_saidas[(df_saidas['Dia_Semana'] == dia) & (df_saidas['Dia_Util'])]['Vl.rateado']
             
             if len(entradas_dia) > 0:
-                entradas_por_dia[dia] = {
-                    'media': entradas_dia.mean(),
-                    'mediana': entradas_dia.median(),
-                    'std': entradas_dia.std(),
-                    'count': len(entradas_dia),
-                    'valores': entradas_dia.tolist()
-                }
-                dias_com_dados.append(dia)
+                entradas_por_dia[dia] = entradas_dia.mean()
             else:
-                entradas_por_dia[dia] = {'media': 0, 'mediana': 0, 'std': 0, 'count': 0, 'valores': []}
+                entradas_por_dia[dia] = 0
             
             if len(saidas_dia) > 0:
-                saidas_por_dia[dia] = {
-                    'media': saidas_dia.mean(),
-                    'mediana': saidas_dia.median(),
-                    'std': saidas_dia.std(),
-                    'count': len(saidas_dia),
-                    'valores': saidas_dia.tolist()
-                }
+                saidas_por_dia[dia] = saidas_dia.mean()
             else:
-                saidas_por_dia[dia] = {'media': 0, 'mediana': 0, 'std': 0, 'count': 0, 'valores': []}
+                saidas_por_dia[dia] = 0
         
-        # Se não há dados para algum dia, usar média geral
-        media_geral_entradas = df_entradas['Vl.rateado'].mean()
-        media_geral_saidas = df_saidas['Vl.rateado'].mean()
+        # Se não há dados para algum dia, usar média geral de dias úteis
+        media_geral_entradas = df_entradas[df_entradas['Dia_Util']]['Vl.rateado'].mean()
+        media_geral_saidas = df_saidas[df_saidas['Dia_Util']]['Vl.rateado'].mean()
         
-        for dia in dias_semana_uteis:
-            if entradas_por_dia[dia]['count'] == 0:
-                entradas_por_dia[dia]['media'] = media_geral_entradas
-            if saidas_por_dia[dia]['count'] == 0:
-                saidas_por_dia[dia]['media'] = media_geral_saidas
+        for dia in range(5):
+            if entradas_por_dia[dia] == 0:
+                entradas_por_dia[dia] = media_geral_entradas
+            if saidas_por_dia[dia] == 0:
+                saidas_por_dia[dia] = media_geral_saidas
         
         # Última data nos dados
         last_date = max(df_entradas['Dt.pagto'].max(), df_saidas['Dt.pagto'].max())
@@ -317,13 +318,13 @@ def create_daily_projection(df_entradas, df_saidas, saldo_atual, days_to_project
         dias_semana_nomes = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo']
         
         while days_added < days_to_project:
-            # Verificar se é dia útil (segunda a sexta e não feriado)
-            if is_business_day(current_date, holidays):
+            # Verificar se é dia útil
+            if is_business_day(current_date):
                 dia_semana = current_date.weekday()
                 
                 # Usar média do dia da semana
-                entradas_dia = entradas_por_dia[dia_semana]['media']
-                saidas_dia = saidas_por_dia[dia_semana]['media']
+                entradas_dia = entradas_por_dia[dia_semana]
+                saidas_dia = saidas_por_dia[dia_semana]
                 
                 saldo_dia = entradas_dia - saidas_dia
                 current_saldo += saldo_dia
@@ -350,7 +351,7 @@ def create_daily_projection(df_entradas, df_saidas, saldo_atual, days_to_project
                     'Saldo_Dia': 0,
                     'Saldo_Acumulado': current_saldo
                 })
-                # Não conta para o total de dias úteis, mas incluímos no calendário
+                days_added += 1  # Conta também fins de semana no total de dias
             
             current_date += timedelta(days=1)
         
@@ -600,13 +601,13 @@ if df_entradas is not None and df_saidas is not None and len(df_entradas) > 0 an
                 dias_uteis_count = len(dias_uteis)
                 
                 st.subheader(f"Projeção para os Próximos {len(projecao_diaria)} Dias")
-                st.caption(f"Considerando {dias_uteis_count} dias úteis e feriados brasileiros")
+                st.caption(f"Considerando {dias_uteis_count} dias úteis e feriados nacionais")
                 
                 # Gráfico de projeção diária
                 fig_daily = go.Figure()
                 
                 # Destacar dias úteis vs não úteis
-                cores = ['blue' if t == 'Dia Útil' else 'lightgray' for t in projecao_diaria['Tipo']]
+                colors = ['blue' if t == 'Dia Útil' else 'lightgray' for t in projecao_diaria['Tipo']]
                 
                 fig_daily.add_trace(go.Scatter(
                     x=projecao_diaria['Data'],
@@ -614,7 +615,7 @@ if df_entradas is not None and df_saidas is not None and len(df_entradas) > 0 an
                     name='Saldo Projetado',
                     mode='lines+markers',
                     line=dict(color='blue', width=2),
-                    marker=dict(size=6, color=cores)
+                    marker=dict(size=6, color=colors)
                 ))
                 
                 # Adicionar linha do saldo atual
