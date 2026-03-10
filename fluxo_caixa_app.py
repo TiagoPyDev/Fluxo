@@ -57,19 +57,16 @@ def is_business_day(date):
         datetime(year, 11, 15).date(), # Proclamação da República
         datetime(year, 12, 25).date(), # Natal
         
-        # Feriados móveis (aproximados - calcular corretamente seria complexo)
-        # Vamos considerar apenas os fixos para simplificar
+        # Feriados móveis (aproximados)
     ]
     
     # Adicionar Carnaval e Sexta Santa (aproximados - anos específicos)
-    # Para 2025
     if year == 2025:
         holidays.extend([
             datetime(2025, 3, 4).date(),  # Carnaval
             datetime(2025, 3, 5).date(),  # Carnaval
             datetime(2025, 4, 18).date(), # Sexta Santa
         ])
-    # Para 2026
     elif year == 2026:
         holidays.extend([
             datetime(2026, 2, 17).date(), # Carnaval
@@ -166,7 +163,7 @@ def load_data(uploaded_file):
         st.error(f"Erro ao carregar arquivo: {str(e)}")
         return None, None
 
-# Função para criar fluxo de caixa mensal com saldo inicial
+# Função para criar fluxo de caixa mensal com saldo inicial - CORRIGIDA
 def create_monthly_cash_flow(df_entradas, df_saidas, saldo_inicial, projection_months=3):
     if df_entradas is None or df_saidas is None or len(df_entradas) == 0 or len(df_saidas) == 0:
         return None
@@ -201,16 +198,23 @@ def create_monthly_cash_flow(df_entradas, df_saidas, saldo_inicial, projection_m
         # Ordenar por data
         fluxo = fluxo.sort_values(['Ano', 'Mes'])
         
-        # CORREÇÃO: Calcular saldo acumulado com saldo inicial
-        # Começa com saldo inicial e adiciona o saldo de cada mês
+        # CORREÇÃO DEFINITIVA: Calcular saldo acumulado com saldo inicial
+        # Começa com saldo inicial e adiciona/subtrai o saldo de cada mês
         saldo_acumulado = saldo_inicial
         saldos_acumulados = []
         
         for _, row in fluxo.iterrows():
-            saldo_acumulado += row['Saldo']
+            # Saldo do mês (já é entradas - saídas)
+            saldo_mes = row['Saldo']
+            saldo_acumulado += saldo_mes
             saldos_acumulados.append(saldo_acumulado)
         
         fluxo['Saldo_Acumulado'] = saldos_acumulados
+        
+        st.write("Debug - Dados do fluxo:")
+        st.write(f"Saldo inicial: R$ {saldo_inicial:,.2f}")
+        for i, row in fluxo.iterrows():
+            st.write(f"{row['Mês/Ano']}: Entradas: R$ {row['Vl.rateado_entradas']:,.2f}, Saídas: R$ {row['Vl.rateado_saidas']:,.2f}, Saldo: R$ {row['Saldo']:,.2f}, Acumulado: R$ {row['Saldo_Acumulado']:,.2f}")
         
         # Projeção para meses futuros
         if len(fluxo) > 0:
@@ -286,15 +290,8 @@ def create_daily_projection(df_entradas, df_saidas, saldo_atual, days_to_project
             entradas_dia = df_entradas[(df_entradas['Dia_Semana'] == dia) & (df_entradas['Dia_Util'])]['Vl.rateado']
             saidas_dia = df_saidas[(df_saidas['Dia_Semana'] == dia) & (df_saidas['Dia_Util'])]['Vl.rateado']
             
-            if len(entradas_dia) > 0:
-                entradas_por_dia[dia] = entradas_dia.mean()
-            else:
-                entradas_por_dia[dia] = 0
-            
-            if len(saidas_dia) > 0:
-                saidas_por_dia[dia] = saidas_dia.mean()
-            else:
-                saidas_por_dia[dia] = 0
+            entradas_por_dia[dia] = entradas_dia.mean() if len(entradas_dia) > 0 else 0
+            saidas_por_dia[dia] = saidas_dia.mean() if len(saidas_dia) > 0 else 0
         
         # Se não há dados para algum dia, usar média geral de dias úteis
         media_geral_entradas = df_entradas[df_entradas['Dia_Util']]['Vl.rateado'].mean()
@@ -338,8 +335,6 @@ def create_daily_projection(df_entradas, df_saidas, saldo_atual, days_to_project
                     'Saldo_Dia': saldo_dia,
                     'Saldo_Acumulado': current_saldo
                 })
-                
-                days_added += 1
             else:
                 # Fim de semana ou feriado - sem movimentação
                 projection_daily.append({
@@ -351,8 +346,8 @@ def create_daily_projection(df_entradas, df_saidas, saldo_atual, days_to_project
                     'Saldo_Dia': 0,
                     'Saldo_Acumulado': current_saldo
                 })
-                days_added += 1  # Conta também fins de semana no total de dias
             
+            days_added += 1
             current_date += timedelta(days=1)
         
         return pd.DataFrame(projection_daily)
@@ -475,7 +470,8 @@ if df_entradas is not None and df_saidas is not None and len(df_entradas) > 0 an
             st.metric("Total Saídas", f"R$ {total_saidas:,.2f}")
         
         with col4:
-            st.metric("Saldo Atual", f"R$ {saldo_atual:,.2f}")
+            saldo_calculado = SALDO_INICIAL + total_entradas - total_saidas
+            st.metric("Saldo Atual (Calculado)", f"R$ {saldo_calculado:,.2f}")
         
         with col5:
             if projecao_diaria is not None and len(projecao_diaria) > 0:
