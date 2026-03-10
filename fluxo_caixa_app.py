@@ -1,4 +1,4 @@
-with tab1:
+
     # Gráfico de Fluxo de Caixa Mensal
     st.subheader("Evolução do Fluxo de Caixa Mensal")
     
